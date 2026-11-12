@@ -2,6 +2,8 @@ import Crypto
 import Foundation
 import _Clibsodium
 
+let juiceboxSodiumIsReady = sodium_init() >= 0
+
 /// A request the recovery driver asks the host app to perform. The SDK owns
 /// the Juicebox protocol, not the HTTP stack.
 public struct JuiceboxHTTPRequest: Sendable {
@@ -95,7 +97,7 @@ public struct JuiceboxRecovery: Sendable {
         pin: [UInt8], transport: any JuiceboxHTTPTransport
     ) async throws -> [UInt8] {
         try Task.checkCancellation()
-        guard sodium_init() >= 0 else { throw JuiceboxRecoveryError.assertion }
+        guard juiceboxSodiumIsReady else { throw JuiceboxRecoveryError.assertion }
         let threshold = configuration.recoverThreshold
 
         // Phase 1: every realm reports the registration version.

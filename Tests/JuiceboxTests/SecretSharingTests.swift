@@ -5,6 +5,10 @@ import Testing
 /// Shamir sharing over scalars and Ristretto points, including threshold and
 /// duplicate handling.
 struct SecretSharingTests {
+    init() throws {
+        try #require(juiceboxSodiumIsReady)
+    }
+
     @Test func scalarSharesRoundTrip() throws {
         let secret = RistrettoScalar.random()
         for count in 2...5 {

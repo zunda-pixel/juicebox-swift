@@ -7,6 +7,10 @@ import Testing
 /// Recovery across two Noise NK hardware realms and one plain HTTP software
 /// realm, with a test-side Noise server built independently of the client.
 struct HardwareRecoveryTests {
+    init() throws {
+        try #require(juiceboxSodiumIsReady)
+    }
+
     private static let version = [UInt8](repeating: 5, count: 16)
     private static let pin = Array("13579".utf8)
     private static let secret = Array("two hardware realms".utf8) + [UInt8](

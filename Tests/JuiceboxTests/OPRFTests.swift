@@ -6,6 +6,10 @@ import Testing
 /// unblinding must recover the unoblivious evaluation, and the DLEQ proof must
 /// bind the result to the public key.
 struct OPRFTests {
+    init() throws {
+        try #require(juiceboxSodiumIsReady)
+    }
+
     private static func hex(_ string: String) -> [UInt8] {
         var out: [UInt8] = []
         var index = string.startIndex

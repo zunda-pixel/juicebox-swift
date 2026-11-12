@@ -7,6 +7,10 @@ import Testing
 /// Drives the full three-phase recovery against fake realms that hold Shamir
 /// shares of the OPRF key and the user-secret scalar.
 struct RecoveryFlowTests {
+    init() throws {
+        try #require(juiceboxSodiumIsReady)
+    }
+
     private static let version = [UInt8](repeating: 5, count: 16)
     private static let pin = Array("1234".utf8)
     private static let userSecret = Array("a 64-byte user secret".utf8) + [UInt8](
