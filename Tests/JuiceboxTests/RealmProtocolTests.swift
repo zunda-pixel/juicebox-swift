@@ -43,7 +43,9 @@ struct RealmProtocolTests {
       #expect(try decodeCBOR(CBOR.unsignedInt(value).encode()) == .unsignedInt(value))
     }
     for value in [Int64(-1), -24, -25, -256, -65536, Int64.min + 1] {
-      #expect(try decodeCBOR(CBOR.negativeInt(UInt64(-1 - value)).encode()) == .negativeInt(UInt64(-1 - value)))
+      #expect(
+        try decodeCBOR(CBOR.negativeInt(UInt64(-1 - value)).encode())
+          == .negativeInt(UInt64(-1 - value)))
     }
   }
 

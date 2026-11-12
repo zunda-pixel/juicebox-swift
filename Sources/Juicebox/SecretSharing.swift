@@ -17,8 +17,12 @@ enum SecretSharingError: Error, Equatable {
 
 extension RistrettoScalar: SecretShareable {
   static var additiveIdentity: RistrettoScalar { .zero }
-  static func adding(_ lhs: RistrettoScalar, _ rhs: RistrettoScalar) -> RistrettoScalar { lhs + rhs }
-  static func multiplied(_ value: RistrettoScalar, by scalar: RistrettoScalar) -> RistrettoScalar { value * scalar }
+  static func adding(_ lhs: RistrettoScalar, _ rhs: RistrettoScalar) -> RistrettoScalar {
+    lhs + rhs
+  }
+  static func multiplied(_ value: RistrettoScalar, by scalar: RistrettoScalar) -> RistrettoScalar {
+    value * scalar
+  }
 }
 
 extension RistrettoPoint: SecretShareable {

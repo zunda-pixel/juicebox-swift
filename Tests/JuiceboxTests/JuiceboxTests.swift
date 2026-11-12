@@ -32,7 +32,8 @@ struct JuiceboxTests {
       Self.hex("508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982")
         == Blake2s.hash(Array("abc".utf8)))
     #expect(
-      Self.hex("69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9") == Blake2s.hash([]))
+      Self.hex("69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9")
+        == Blake2s.hash([]))
   }
 
   /// The reference implementation's PIN vector (`pin.rs`): PIN "1234",
@@ -43,7 +44,8 @@ struct JuiceboxTests {
       registrationVersion: [UInt8](repeating: 5, count: 16),
       userInfo: Array("artemis".utf8))
     #expect(
-      Self.hexString(accessKey) == "2935da84c97423b37f3457231b877ce6ac2093501d7255dbee1deb09a5d8821b")
+      Self.hexString(accessKey)
+        == "2935da84c97423b37f3457231b877ce6ac2093501d7255dbee1deb09a5d8821b")
     #expect(
       Self.hexString(seed) == "87c8c9b5d3ea9fea83b6ac6a64e25b97c4722ca4e40bea2523efea262125e22a")
   }
@@ -71,7 +73,8 @@ struct JuiceboxTests {
       // The first message is the client ephemeral followed by the
       // encrypted payload.
       #expect(
-        request.clientEphemeralPublic + request.payloadCiphertext == Self.hex(messages[0].ciphertext),
+        request.clientEphemeralPublic + request.payloadCiphertext
+          == Self.hex(messages[0].ciphertext),
         "vector \(index) message 0")
 
       let serverMessage = Self.hex(messages[1].ciphertext)
