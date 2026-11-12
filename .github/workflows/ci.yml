@@ -1,20 +1,17 @@
 name: CI
 
-on:
-  push:
-    branches: [main]
-  pull_request:
+on: pull_request
 
 permissions:
   contents: read
 
 jobs:
-  linux:
-    name: Linux
-    runs-on: ubuntu-latest
-    container: swiftlang/swift:nightly-6.4.x-noble@sha256:e2db4a611606f8f686f2a1e113689889f03f20b51b2308c8cf5dd80d27b4995b
+  test:
+    name: Linux tests
+    runs-on: ubuntu-26.04-arm
+    container: swift:latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Build libsodium 1.0.22
@@ -37,3 +34,12 @@ jobs:
           pkg-config --exact-version=1.0.22 libsodium
           # swift-sodium emits a preprocessor warning for system libsodium (zunda-pixel/xchat-swift#3).
           swift test -Xcc -Wno-cpp
+  lint:
+    name: Swift format lint
+    runs-on: ubuntu-26.04-arm
+    container: swift:latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - run: swift format lint -r -p -s .
