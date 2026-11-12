@@ -40,7 +40,10 @@ let package = Package(
         ),
         .testTarget(
             name: "JuiceboxTests",
-            dependencies: ["Juicebox", .product(name: "CBOR", package: "swift-cbor")],
+            dependencies: [
+                .target(name: "Juicebox"),
+                .product(name: "CBOR", package: "swift-cbor")
+            ],
             resources: [.copy("Fixtures/noise_nk_vectors.json")],
             swiftSettings: swiftSettings
         ),
