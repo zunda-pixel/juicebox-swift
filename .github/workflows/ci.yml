@@ -1,0 +1,45 @@
+name: CI
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Linux tests
+    runs-on: ubuntu-26.04-arm
+    container: swift:latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build libsodium 1.0.22
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl pkg-config
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 --output libsodium-1.0.22.tar.gz \
+            https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz
+          echo "adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349  libsodium-1.0.22.tar.gz" | sha256sum --check
+          tar -xzf libsodium-1.0.22.tar.gz
+          cd libsodium-1.0.22
+          ./configure --prefix="$RUNNER_TEMP/libsodium" --disable-static
+          make -j "$(nproc)"
+          make install
+      - name: Test
+        run: |
+          export PKG_CONFIG_PATH="$RUNNER_TEMP/libsodium/lib/pkgconfig"
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/libsodium/lib"
+          pkg-config --exact-version=1.0.22 libsodium
+          # swift-sodium emits a preprocessor warning for system libsodium (zunda-pixel/xchat-swift#3).
+          swift test -Xcc -Wno-cpp
+  lint:
+    name: Swift format lint
+    runs-on: ubuntu-26.04-arm
+    container: swift:latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - run: swift format lint -r -p -s .
