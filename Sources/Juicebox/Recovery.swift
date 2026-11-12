@@ -93,6 +93,8 @@ public struct JuiceboxRecovery: Sendable {
     self.userInfo = userInfo
   }
 
+  /// Recovers the user secret with PIN hashing off the caller's actor.
+  @concurrent
   public func recover(
     pin: [UInt8], transport: any JuiceboxHTTPTransport
   ) async throws -> [UInt8] {

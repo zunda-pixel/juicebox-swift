@@ -254,6 +254,30 @@ struct RecoveryFlowTests {
     #expect(secret == Self.userSecret)
   }
 
+  #if os(macOS)
+    private struct OffMainTransport: JuiceboxHTTPTransport {
+      var network: FakeNetwork
+
+      func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+        checkThread()
+        return try await network.send(request)
+      }
+
+      private func checkThread() {
+        #expect(!Thread.isMainThread)
+      }
+    }
+
+    @MainActor
+    @Test func recoveryLeavesMainActor() async throws {
+      let (network, configuration, tokens) = try makeNetwork()
+      let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+      let secret = try await recovery.recover(
+        pin: Self.pin, transport: OffMainTransport(network: network))
+      #expect(secret == Self.userSecret)
+    }
+  #endif
+
   @Test func cancellationStopsBeforeTheNextPINRequest() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
