@@ -2,7 +2,7 @@ import Crypto
 import _Clibsodium
 
 struct RistrettoPoint: Sendable, Equatable {
-    private let bytes: [UInt8]
+    private var bytes: [UInt8]
 
     static let identity = Self(bytes: [UInt8](repeating: 0, count: 32))
     static let basepoint = Self.makeBasepoint()

@@ -103,19 +103,19 @@ struct JuiceboxTests {
 
     private struct Vector: Decodable {
         struct Message: Decodable {
-            let payload: String
-            let ciphertext: String
+            var payload: String
+            var ciphertext: String
         }
 
-        let prologue: String
-        let clientEphemeralSecret: String
-        let serverStaticPublic: String
-        let serverEphemeralSecret: String
-        let messages: [Message]
+        var prologue: String
+        var clientEphemeralSecret: String
+        var serverStaticPublic: String
+        var serverEphemeralSecret: String
+        var messages: [Message]
     }
 
     private struct VectorFile: Decodable {
-        let vectors: [Vector]
+        var vectors: [Vector]
     }
 
     private func loadVectors() throws -> [Vector] {

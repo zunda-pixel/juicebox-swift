@@ -8,8 +8,8 @@ protocol SecretShareable: Sendable {
 }
 
 struct SecretShare<Secret: SecretShareable>: Sendable {
-    let index: UInt32
-    let secret: Secret
+    var index: UInt32
+    var secret: Secret
 }
 
 enum SecretSharingError: Error, Equatable {

@@ -7,10 +7,10 @@ let juiceboxSodiumIsReady = sodium_init() >= 0
 /// A request the recovery driver asks the host app to perform. The SDK owns
 /// the Juicebox protocol, not the HTTP stack.
 public struct JuiceboxHTTPRequest: Sendable {
-    public let method: String
-    public let url: String
-    public let headers: [String: String]
-    public let body: [UInt8]
+    public var method: String
+    public var url: String
+    public var headers: [String: String]
+    public var body: [UInt8]
 
     public init(method: String, url: String, headers: [String: String], body: [UInt8]) {
         self.method = method
@@ -21,8 +21,8 @@ public struct JuiceboxHTTPRequest: Sendable {
 }
 
 public struct JuiceboxHTTPResponse: Sendable {
-    public let statusCode: Int
-    public let body: [UInt8]
+    public var statusCode: Int
+    public var body: [UInt8]
 
     public init(statusCode: Int, body: [UInt8]) {
         self.statusCode = statusCode
@@ -73,10 +73,10 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
 /// evaluate the PIN's OPRF across realms, then unlock and decrypt the user
 /// secret. Every network call is delegated to a `JuiceboxHTTPTransport`.
 public struct JuiceboxRecovery: Sendable {
-    let configuration: JuiceboxConfiguration
+    var configuration: JuiceboxConfiguration
     /// Bearer tokens keyed by lowercased realm id hex.
-    let tokens: [String: String]
-    let userInfo: [UInt8]
+    var tokens: [String: String]
+    var userInfo: [UInt8]
 
     static let juiceboxVersion = "0.3.7"
 
@@ -478,8 +478,8 @@ public struct JuiceboxRecovery: Sendable {
 }
 
 private struct PointShareKey: Hashable {
-    let commitment: [UInt8]
-    let verifyingKey: [UInt8]
+    var commitment: [UInt8]
+    var verifyingKey: [UInt8]
 }
 
 private func constantTimeEquals(_ lhs: [UInt8], _ rhs: [UInt8]) -> Bool {

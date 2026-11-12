@@ -22,18 +22,18 @@ struct RecoveryFlowTests {
     // MARK: Fake network
 
     struct FakeRealm {
-        let id: [UInt8]
-        let url: String
-        let token: String
-        let oprfShare: RistrettoScalar
-        let scalarShare: RistrettoScalar
-        let encryptedSecret: [UInt8]
-        let secretCommitment: [UInt8]
-        let unlockKeyCommitment: [UInt8]
-        let unlockKey: [UInt8]
-        let signingKey: Curve25519.Signing.PrivateKey
-        let numGuesses: UInt16
-        let guessCount: UInt16
+        var id: [UInt8]
+        var url: String
+        var token: String
+        var oprfShare: RistrettoScalar
+        var scalarShare: RistrettoScalar
+        var encryptedSecret: [UInt8]
+        var secretCommitment: [UInt8]
+        var unlockKeyCommitment: [UInt8]
+        var unlockKey: [UInt8]
+        var signingKey: Curve25519.Signing.PrivateKey
+        var numGuesses: UInt16
+        var guessCount: UInt16
     }
 
     final class FakeNetwork: JuiceboxHTTPTransport, @unchecked Sendable {

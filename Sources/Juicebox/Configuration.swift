@@ -17,9 +17,9 @@ public enum JuiceboxPinHashingMode: String, Sendable, Equatable {
 /// A realm the client talks to: its 16-byte id, base address, and, for
 /// hardware realms, its X25519 public key.
 public struct JuiceboxRealm: Sendable, Equatable {
-    public let id: [UInt8]
-    public let address: String
-    public let publicKey: [UInt8]?
+    public var id: [UInt8]
+    public var address: String
+    public var publicKey: [UInt8]?
 
     public init(id: [UInt8], address: String, publicKey: [UInt8]? = nil) {
         self.id = id
@@ -42,10 +42,10 @@ public enum JuiceboxConfigurationError: Error, Equatable {
 
 /// The client configuration the X API returns inside `key_store_token_map_json`.
 public struct JuiceboxConfiguration: Sendable, Equatable {
-    public let realms: [JuiceboxRealm]
-    public let registerThreshold: Int
-    public let recoverThreshold: Int
-    public let pinHashingMode: JuiceboxPinHashingMode
+    public private(set) var realms: [JuiceboxRealm]
+    public private(set) var registerThreshold: Int
+    public private(set) var recoverThreshold: Int
+    public private(set) var pinHashingMode: JuiceboxPinHashingMode
 
     /// Parses the SDK configuration JSON. Realms are sorted by id, which fixes
     /// their share indices, exactly as the reference client does.

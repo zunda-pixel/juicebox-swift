@@ -2,7 +2,7 @@ import _Clibsodium
 
 /// A canonical little-endian scalar modulo the Ristretto255 group order.
 struct RistrettoScalar: Sendable, Equatable {
-    let bytes: [UInt8]
+    private(set) var bytes: [UInt8]
 
     static let zero = Self(bytes: [UInt8](repeating: 0, count: 32))
     static let one = Self(bytes: [1] + [UInt8](repeating: 0, count: 31))

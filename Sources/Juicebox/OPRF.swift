@@ -8,11 +8,11 @@ enum OPRF {
     static let proofDomain = Array("Juicebox_DLEQ_2023_1;".utf8)
 
     struct BlindingFactor: Sendable {
-        let scalar: RistrettoScalar
+        var scalar: RistrettoScalar
     }
 
     struct BlindedInput: Sendable {
-        let point: RistrettoPoint
+        var point: RistrettoPoint
 
         var compressed: [UInt8] { point.compress() }
 
@@ -29,7 +29,7 @@ enum OPRF {
     }
 
     struct BlindedOutput: Sendable {
-        let point: RistrettoPoint
+        var point: RistrettoPoint
 
         var compressed: [UInt8] { point.compress() }
 
@@ -46,8 +46,8 @@ enum OPRF {
     }
 
     struct Proof: Sendable {
-        let c: RistrettoScalar
-        let betaZ: RistrettoScalar
+        var c: RistrettoScalar
+        var betaZ: RistrettoScalar
 
         /// The wire form is two 32-byte scalars.
         var bytes: [UInt8] { c.bytes + betaZ.bytes }

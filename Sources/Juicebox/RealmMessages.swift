@@ -8,14 +8,14 @@ enum RealmMessageError: Error, Equatable {
 }
 
 struct OPRFSignedPublicKey: Equatable, Sendable {
-    let publicKey: [UInt8]
-    let verifyingKey: [UInt8]
-    let signature: [UInt8]
+    var publicKey: [UInt8]
+    var verifyingKey: [UInt8]
+    var signature: [UInt8]
 }
 
 struct OPRFProofFields: Equatable, Sendable {
-    let c: [UInt8]
-    let betaZ: [UInt8]
+    var c: [UInt8]
+    var betaZ: [UInt8]
 }
 
 enum SecretsRequest: Equatable, Sendable {
@@ -139,8 +139,8 @@ private func decodeRecover3(_ value: CBOR) throws -> Recover3Response {
 // MARK: Padded hardware responses
 
 struct PaddedSecretsResponse: Equatable, Sendable {
-    let unpaddedLength: UInt16
-    let paddedBytes: [UInt8]
+    var unpaddedLength: UInt16
+    var paddedBytes: [UInt8]
 
     static let maximumLength = 436
 
@@ -191,11 +191,11 @@ struct ClientRequest: Sendable {
         case secretsRequest = "SecretsRequest"
     }
 
-    let realmId: [UInt8]
-    let authToken: String
-    let sessionId: UInt32
-    let kind: Kind
-    let encrypted: NoiseRequest
+    var realmId: [UInt8]
+    var authToken: String
+    var sessionId: UInt32
+    var kind: Kind
+    var encrypted: NoiseRequest
 
     func encoded() -> [UInt8] {
         CBOR.map([
@@ -210,10 +210,10 @@ struct ClientRequest: Sendable {
 
 enum ClientResponse: Equatable, Sendable {
     struct Handshake: Equatable, Sendable {
-        let serverEphemeralPublic: [UInt8]
-        let payloadCiphertext: [UInt8]
-        let sessionLifetimeSeconds: UInt64
-        let sessionLifetimeNanos: UInt32
+        var serverEphemeralPublic: [UInt8]
+        var payloadCiphertext: [UInt8]
+        var sessionLifetimeSeconds: UInt64
+        var sessionLifetimeNanos: UInt32
     }
 
     case okHandshake(Handshake)

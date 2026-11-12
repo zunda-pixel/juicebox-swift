@@ -20,7 +20,7 @@ struct HardwareRecoveryTests {
     // MARK: Server-side Noise
 
     private struct ServerCipher {
-        private let key: SymmetricKey
+        private var key: SymmetricKey
         private var nonce: UInt64 = 0
 
         init(key: [UInt8]) {
@@ -73,8 +73,8 @@ struct HardwareRecoveryTests {
         var h: [UInt8]
         var ck: [UInt8]
         var cipher: ServerCipher
-        let serverEphemeralPublic: [UInt8]
-        let requestPlaintext: [UInt8]
+        var serverEphemeralPublic: [UInt8]
+        var requestPlaintext: [UInt8]
 
         static func begin(
             staticSecret: Curve25519.KeyAgreement.PrivateKey, clientEphemeralPublic: [UInt8],
@@ -137,18 +137,18 @@ struct HardwareRecoveryTests {
     // MARK: Fake realms
 
     private struct RealmFixture {
-        let id: [UInt8]
-        let address: String
-        let token: String
-        let oprfShare: RistrettoScalar
-        let scalarShare: RistrettoScalar
-        let encryptedSecret: [UInt8]
-        let secretCommitment: [UInt8]
-        let unlockKeyCommitment: [UInt8]
-        let unlockKey: [UInt8]
-        let numGuesses: UInt16
-        let guessCount: UInt16
-        let noiseStaticSecret: Curve25519.KeyAgreement.PrivateKey?
+        var id: [UInt8]
+        var address: String
+        var token: String
+        var oprfShare: RistrettoScalar
+        var scalarShare: RistrettoScalar
+        var encryptedSecret: [UInt8]
+        var secretCommitment: [UInt8]
+        var unlockKeyCommitment: [UInt8]
+        var unlockKey: [UInt8]
+        var numGuesses: UInt16
+        var guessCount: UInt16
+        var noiseStaticSecret: Curve25519.KeyAgreement.PrivateKey?
     }
 
     private final class FakeNetwork: JuiceboxHTTPTransport, @unchecked Sendable {

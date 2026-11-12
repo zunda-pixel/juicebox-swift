@@ -25,7 +25,7 @@ enum NoiseNK {
 
     /// The client side of an in-progress NK handshake.
     struct Handshake {
-        private let clientEphemeral: Curve25519.KeyAgreement.PrivateKey
+        private var clientEphemeral: Curve25519.KeyAgreement.PrivateKey
         private var h: [UInt8]
         private var ck: [UInt8]
 
@@ -133,7 +133,7 @@ enum NoiseNK {
 /// One direction of a Noise cipher: ChaCha20-Poly1305 with the protocol's
 /// 12-byte nonce (four zero bytes, then a little-endian 64-bit counter).
 private struct CipherState {
-    private let key: SymmetricKey
+    private var key: SymmetricKey
     private var nonce: UInt64 = 0
 
     init(key: [UInt8]) {
