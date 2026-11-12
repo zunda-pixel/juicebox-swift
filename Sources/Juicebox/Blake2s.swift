@@ -1,4 +1,5 @@
 import BlakeHash
+import Crypto
 import Foundation
 
 enum Blake2s {
@@ -11,44 +12,53 @@ enum Blake2s {
     }
 }
 
-/// HMAC-BLAKE2s-256 (RFC 2104 over BLAKE2s), which Noise's key derivation
-/// uses.
-func hmacBlake2s(key: [UInt8], message: [UInt8]) -> [UInt8] {
-    var paddedKey = key.count > 64 ? Blake2s.hash(key) : key
-    if paddedKey.count < 64 {
-        paddedKey.append(contentsOf: [UInt8](repeating: 0, count: 64 - paddedKey.count))
-    }
-    let inner = paddedKey.map { $0 ^ 0x36 }
-    let outer = paddedKey.map { $0 ^ 0x5c }
-    return Blake2s.hash(outer + Blake2s.hash(inner + message))
-}
-
-/// HKDF with HMAC-BLAKE2s, as Noise instantiates it: extract with the
-/// chaining key as salt, then expand without info.
+/// Noise uses HKDF-HMAC-BLAKE2s with the chaining key as salt and empty info.
 func hkdfBlake2s(salt: [UInt8], ikm: [UInt8], length: Int) -> [UInt8] {
-    let prk = hmacBlake2s(key: salt, message: ikm)
-    var output: [UInt8] = []
-    var previous: [UInt8] = []
-    var counter: UInt8 = 1
-    while output.count < length {
-        previous = hmacBlake2s(key: prk, message: previous + [counter])
-        output.append(contentsOf: previous)
-        counter &+= 1
-    }
-    return Array(output.prefix(length))
+    let key = HKDF<Blake2sHash>.deriveKey(
+        inputKeyMaterial: SymmetricKey(data: ikm),
+        salt: salt,
+        info: [UInt8](),
+        outputByteCount: length
+    )
+    return unsafe key.withUnsafeBytes { unsafe Array($0) }
 }
 
-extension UInt32 {
-    var leBytes: [UInt8] {
-        [
-            UInt8(truncatingIfNeeded: self),
-            UInt8(truncatingIfNeeded: self >> 8),
-            UInt8(truncatingIfNeeded: self >> 16),
-            UInt8(truncatingIfNeeded: self >> 24),
-        ]
+private struct Blake2sHash: HashFunction {
+    static let blockByteCount = 64
+
+    private var hasher = BLAKE2s.Hasher()
+
+    init() {}
+
+    mutating func update(bufferPointer: UnsafeRawBufferPointer) {
+        hasher.update(unsafe Data(bufferPointer))
     }
 
-    func rotatedRight(_ amount: UInt32) -> UInt32 {
-        (self &>> amount) | (self &<< ((32 &- amount) & 31))
+    func finalize() -> Blake2sDigest {
+        var copy = hasher
+        return Blake2sDigest(bytes: Array(copy.finalize()))
+    }
+}
+
+private struct Blake2sDigest: Digest {
+    static let byteCount = 32
+
+    var bytes: [UInt8]
+
+    var description: String {
+        bytes.map { byte in
+            let hex = String(byte, radix: 16)
+            return byte < 16 ? "0" + hex : hex
+        }.joined()
+    }
+
+    func makeIterator() -> Array<UInt8>.Iterator {
+        bytes.makeIterator()
+    }
+
+    func withUnsafeBytes<Result>(
+        _ body: (UnsafeRawBufferPointer) throws -> Result
+    ) rethrows -> Result {
+        try bytes.withUnsafeBytes(body)
     }
 }

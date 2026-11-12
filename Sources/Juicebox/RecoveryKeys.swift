@@ -65,34 +65,11 @@ enum JuiceboxKeys {
 
     // MARK: User secret
 
-    /// `[length, secret, 0...]` padded to 129 bytes. The length is one byte,
-    /// so the secret cannot exceed 128 bytes.
-    static func padUserSecret(_ secret: [UInt8]) -> [UInt8]? {
-        guard secret.count <= maximumUserSecretLength else { return nil }
-        var padded = [UInt8](repeating: 0, count: paddedUserSecretLength)
-        padded[0] = UInt8(secret.count)
-        padded.replaceSubrange(1..<(1 + secret.count), with: secret)
-        return padded
-    }
-
     static func unpadUserSecret(_ padded: [UInt8]) -> [UInt8]? {
         guard padded.count == paddedUserSecretLength else { return nil }
         let length = Int(padded[0])
         guard length <= maximumUserSecretLength, 1 + length <= padded.count else { return nil }
         return Array(padded[1..<(1 + length)])
-    }
-
-    /// ChaCha20-Poly1305 with an all-zero nonce, which is safe because each
-    /// registration encrypts under a fresh PIN-derived key.
-    static func encryptUserSecret(_ secret: [UInt8], key: [UInt8]) -> [UInt8]? {
-        guard let padded = padUserSecret(secret) else { return nil }
-        let nonce = try? ChaChaPoly.Nonce(data: [UInt8](repeating: 0, count: 12))
-        guard let nonce,
-            let sealed = try? ChaChaPoly.seal(
-                Data(padded), using: SymmetricKey(data: key), nonce: nonce,
-                authenticating: Data())
-        else { return nil }
-        return Array(sealed.ciphertext) + Array(sealed.tag)
     }
 
     static func decryptUserSecret(_ encrypted: [UInt8], key: [UInt8]) -> [UInt8]? {

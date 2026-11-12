@@ -16,13 +16,6 @@ enum OPRF {
 
         var compressed: [UInt8] { point.compress() }
 
-        init(compressed: [UInt8]) throws {
-            guard let point = RistrettoPoint.decompress(compressed) else {
-                throw OPRFError.invalidPoint
-            }
-            self.point = point
-        }
-
         init(point: RistrettoPoint) {
             self.point = point
         }
@@ -48,9 +41,6 @@ enum OPRF {
     struct Proof: Sendable {
         var c: RistrettoScalar
         var betaZ: RistrettoScalar
-
-        /// The wire form is two 32-byte scalars.
-        var bytes: [UInt8] { c.bytes + betaZ.bytes }
 
         init(c: RistrettoScalar, betaZ: RistrettoScalar) {
             self.c = c
@@ -109,52 +99,16 @@ enum OPRF {
         return expected == proof.c
     }
 
-    // MARK: Server (used by tests and non-interactive paths)
-
-    static func publicKey(for privateKey: RistrettoScalar) -> [UInt8] {
-        RistrettoPoint.basepoint.scalarMultiply(privateKey).compress()
-    }
-
-    static func evaluate(
-        privateKey: RistrettoScalar, blindedInput: BlindedInput
-    ) -> BlindedOutput {
-        BlindedOutput(point: blindedInput.point.scalarMultiply(privateKey))
-    }
-
-    static func generateProof(
-        privateKey: RistrettoScalar,
-        nonce: RistrettoScalar,
-        blindedInput: BlindedInput,
-        publicKey: [UInt8],
-        blindedOutput: BlindedOutput
-    ) -> Proof {
-        let vT = RistrettoPoint.basepoint.scalarMultiply(nonce)
-        let wT = blindedInput.point.scalarMultiply(nonce)
-        let c = challenge(
-            u: blindedInput.compressed, v: publicKey, w: blindedOutput.compressed,
-            vT: vT.compress(), wT: wT.compress())
-        let betaZ = nonce + privateKey * c
-        return Proof(c: c, betaZ: betaZ)
-    }
-
-    /// Evaluates locally, giving the same output as a full interaction.
-    static func unobliviousEvaluate(
-        privateKey: RistrettoScalar, input: [UInt8]
-    ) -> [UInt8] {
-        let result = RistrettoPoint.hashToGroup(input).scalarMultiply(privateKey)
-        return hashToOutput(input: input, result: result)
-    }
-
     // MARK: Hashing
 
-    private static func hashToOutput(input: [UInt8], result: RistrettoPoint) -> [UInt8] {
+    static func hashToOutput(input: [UInt8], result: RistrettoPoint) -> [UInt8] {
         var data = outputDomain
         data += input
         data += result.compress()
         return Array(SHA512.hash(data: data))
     }
 
-    private static func challenge(
+    static func challenge(
         u: [UInt8], v: [UInt8], w: [UInt8], vT: [UInt8], wT: [UInt8]
     ) -> RistrettoScalar {
         var data = proofDomain

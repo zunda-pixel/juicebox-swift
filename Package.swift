@@ -42,7 +42,8 @@ let package = Package(
             name: "JuiceboxTests",
             dependencies: [
                 .target(name: "Juicebox"),
-                .product(name: "CBOR", package: "swift-cbor")
+                .product(name: "CBOR", package: "swift-cbor"),
+                .product(name: "Crypto", package: "swift-crypto")
             ],
             resources: [.copy("Fixtures/noise_nk_vectors.json")],
             swiftSettings: swiftSettings
