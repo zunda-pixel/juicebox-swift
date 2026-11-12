@@ -12,11 +12,9 @@ jobs:
   linux:
     name: Linux
     runs-on: ubuntu-latest
-    # The Swift 6.4 toolchain, which swift-tools-version 6.4 requires; the
-    # setup-swift action's release list has no 6.4 entry yet.
-    container: swiftlang/swift:nightly-6.4.x-jammy@sha256:96b2c94a0743700be6e3a7ccd58d8e99b04e09be6d2729f3cb5ad1d0fd1ae7fa
+    container: swiftlang/swift:nightly-6.4.x-noble@sha256:e2db4a611606f8f686f2a1e113689889f03f20b51b2308c8cf5dd80d27b4995b
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Build libsodium 1.0.22
