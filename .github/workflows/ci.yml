@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    # The Swift 6.4 toolchain, which swift-tools-version 6.4 requires; the
+    # setup-swift action's release list has no 6.4 entry yet.
+    container: swiftlang/swift:nightly-6.4.x-jammy@sha256:96b2c94a0743700be6e3a7ccd58d8e99b04e09be6d2729f3cb5ad1d0fd1ae7fa
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Build libsodium 1.0.22
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl pkg-config
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 --output libsodium-1.0.22.tar.gz \
+            https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz
+          echo "adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349  libsodium-1.0.22.tar.gz" | sha256sum --check
+          tar -xzf libsodium-1.0.22.tar.gz
+          cd libsodium-1.0.22
+          ./configure --prefix="$RUNNER_TEMP/libsodium" --disable-static
+          make -j "$(nproc)"
+          make install
+      - name: Test
+        run: |
+          export PKG_CONFIG_PATH="$RUNNER_TEMP/libsodium/lib/pkgconfig"
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/libsodium/lib"
+          pkg-config --exact-version=1.0.22 libsodium
+          # swift-sodium emits a preprocessor warning for system libsodium (zunda-pixel/xchat-swift#3).
+          swift test -Xcc -Wno-cpp
