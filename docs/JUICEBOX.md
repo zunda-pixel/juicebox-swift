@@ -18,9 +18,10 @@
   tests.
 - `SecretSharing`: Shamir sharing and Lagrange recovery over scalars and
   Ristretto points.
-- `CBOR` plus `RealmMessages`: the serde-compatible CBOR encoding of the
-  recovery requests and responses, the padded hardware envelope, and the
-  Noise `ClientRequest` / `ClientResponse` wrapper.
+- `RealmMessages` uses [swift-cbor](https://github.com/brokenhandsio/swift-cbor)
+  for serde-compatible CBOR. Realm decoding accepts one complete message of
+  at most 64 KiB, bounds container and tag nesting, and rejects duplicate map
+  keys.
 - `JuiceboxConfiguration` (realm endpoints, public keys, and thresholds) and
   `JuiceboxRecovery`, the three-phase driver. The app supplies a
   `JuiceboxHTTPTransport`; the SDK builds every request and parses every

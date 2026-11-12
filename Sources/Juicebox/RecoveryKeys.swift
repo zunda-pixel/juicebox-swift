@@ -113,3 +113,12 @@ enum JuiceboxKeys {
 func be16(_ value: UInt16) -> [UInt8] {
     [UInt8(truncatingIfNeeded: value >> 8), UInt8(truncatingIfNeeded: value)]
 }
+
+func be32(_ value: UInt32) -> [UInt8] {
+    [
+        UInt8(truncatingIfNeeded: value >> 24),
+        UInt8(truncatingIfNeeded: value >> 16),
+        UInt8(truncatingIfNeeded: value >> 8),
+        UInt8(truncatingIfNeeded: value),
+    ]
+}

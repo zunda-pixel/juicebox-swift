@@ -1,3 +1,4 @@
+import CBOR
 import Foundation
 import Testing
 
@@ -27,34 +28,34 @@ struct RealmProtocolTests {
     }
 
     @Test func cborIntegers() throws {
-        #expect(encodeCBOR(.unsigned(0)) == [0x00])
-        #expect(encodeCBOR(.unsigned(23)) == [0x17])
-        #expect(encodeCBOR(.unsigned(24)) == [0x18, 0x18])
-        #expect(encodeCBOR(.unsigned(255)) == [0x18, 0xff])
-        #expect(encodeCBOR(.unsigned(256)) == [0x19, 0x01, 0x00])
-        #expect(encodeCBOR(.unsigned(65535)) == [0x19, 0xff, 0xff])
-        #expect(encodeCBOR(.unsigned(65536)) == [0x1a, 0x00, 0x01, 0x00, 0x00])
-        #expect(encodeCBOR(.negative(-1)) == [0x20])
-        #expect(encodeCBOR(.negative(-24)) == [0x37])
-        #expect(encodeCBOR(.negative(-25)) == [0x38, 0x18])
+        #expect(CBOR.unsignedInt(0).encode() == [0x00])
+        #expect(CBOR.unsignedInt(23).encode() == [0x17])
+        #expect(CBOR.unsignedInt(24).encode() == [0x18, 0x18])
+        #expect(CBOR.unsignedInt(255).encode() == [0x18, 0xff])
+        #expect(CBOR.unsignedInt(256).encode() == [0x19, 0x01, 0x00])
+        #expect(CBOR.unsignedInt(65535).encode() == [0x19, 0xff, 0xff])
+        #expect(CBOR.unsignedInt(65536).encode() == [0x1a, 0x00, 0x01, 0x00, 0x00])
+        #expect(CBOR.negativeInt(0).encode() == [0x20])
+        #expect(CBOR.negativeInt(23).encode() == [0x37])
+        #expect(CBOR.negativeInt(24).encode() == [0x38, 0x18])
 
         for value in [UInt64(0), 1, 23, 24, 255, 256, 65535, 65536, 1 << 32, UInt64.max] {
-            #expect(try decodeCBOR(encodeCBOR(.unsigned(value))) == .unsigned(value))
+            #expect(try decodeCBOR(CBOR.unsignedInt(value).encode()) == .unsignedInt(value))
         }
         for value in [Int64(-1), -24, -25, -256, -65536, Int64.min + 1] {
-            #expect(try decodeCBOR(encodeCBOR(.negative(value))) == .negative(value))
+            #expect(try decodeCBOR(CBOR.negativeInt(UInt64(-1 - value)).encode()) == .negativeInt(UInt64(-1 - value)))
         }
     }
 
     @Test func cborContainers() throws {
-        let value = CBORValue.map([
-            CBORPair(key: .text("a"), value: .array([.unsigned(1), .bool(true), .null])),
-            CBORPair(key: .text("b"), value: .bytes([0, 1, 2])),
-            CBORPair(key: .text("c"), value: .negative(-3)),
+        let value = CBOR.map([
+            "a": .array([.unsignedInt(1), .bool(true), .null]),
+            "b": .byteString([0, 1, 2]),
+            "c": .negativeInt(2),
         ])
-        let encoded = encodeCBOR(value)
+        let encoded = value.encode()
         #expect(try decodeCBOR(encoded) == value)
-        #expect(encodeCBOR(try decodeCBOR(encoded)) == encoded)
+        #expect((try decodeCBOR(encoded)).encode() == encoded)
     }
 
     /// The reference implementation's serialized proof: a two-entry map of
@@ -67,18 +68,14 @@ struct RealmProtocolTests {
         #expect(
             value
                 == .map([
-                    CBORPair(
-                        key: .text("c"),
-                        value: .bytes(
+                    "c": .byteString(
                             Self.hex(
-                                "ebd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010"))),
-                    CBORPair(
-                        key: .text("beta_z"),
-                        value: .bytes(
+                                "ebd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010")),
+                    "beta_z": .byteString(
                             Self.hex(
-                                "ecd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010"))),
+                                "ecd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010")),
                 ]))
-        #expect(encodeCBOR(value) == bytes)
+        #expect(value.encode() == bytes)
     }
 
     @Test func cborRejectsMalformedInput() {
@@ -93,9 +90,22 @@ struct RealmProtocolTests {
     }
 
     @Test func cborTagsCountTowardNestingLimit() throws {
-        #expect(try decodeCBOR([0xc0, 0x00]) == .unsigned(0))
+        #expect(try decodeCBOR([0xc0, 0x00]) == .unsignedInt(0))
         let tags = [UInt8](repeating: 0xc0, count: 64)
-        #expect(throws: CBORError.depthExceeded) { _ = try decodeCBOR(tags + [0x00]) }
+        #expect(throws: CBORError.maxDepthExceeded(31)) { _ = try decodeCBOR(tags + [0x00]) }
+    }
+
+    @Test func cborRejectsDuplicateMapKeys() {
+        let duplicateKeys: [UInt8] = [0xa2, 0x61, 0x78, 0x01, 0x61, 0x78, 0x02]
+        let taggedDuplicate: [UInt8] = [0xa2, 0x61, 0x78, 0x01, 0xc0, 0x61, 0x78, 0x02]
+        for bytes in [duplicateKeys, taggedDuplicate] {
+            #expect(throws: CBORError.duplicateMapKey) { _ = try decodeCBOR(bytes) }
+        }
+    }
+
+    @Test func cborRejectsOversizedResponses() {
+        let bytes = [UInt8](repeating: 0, count: 64 * 1024 + 1)
+        #expect(throws: RealmMessageError.malformed) { _ = try decodeCBOR(bytes) }
     }
 
     // MARK: Configuration
@@ -205,66 +215,48 @@ struct RealmProtocolTests {
 
     @Test func secretsResponseDecoding() throws {
         let recover1 = try SecretsResponse.decode(
-            encodeCBOR(
-                .map([
-                    CBORPair(
-                        key: .text("Recover1"),
-                        value: .map([
-                            CBORPair(
-                                key: .text("Ok"),
-                                value: .map([
-                                    CBORPair(
-                                        key: .text("version"), value: .bytes([UInt8](repeating: 7, count: 16))
-                                    )
-                                ]))
-                        ]))
-                ])))
+            CBOR.map([
+                    "Recover1": .map([
+                            "Ok": .map([
+                                    "version": .byteString([UInt8](repeating: 7, count: 16))
+                                ])
+                        ])
+                ]).encode())
         #expect(recover1 == .recover1(.ok(version: [UInt8](repeating: 7, count: 16))))
 
         #expect(
             try SecretsResponse.decode(
-                encodeCBOR(
-                    .map([
-                        CBORPair(key: .text("Recover1"), value: .text("NotRegistered"))
-                    ]))) == .recover1(.notRegistered))
+                CBOR.map([
+                        "Recover1": .textString("NotRegistered")
+                    ]).encode()) == .recover1(.notRegistered))
         #expect(
             try SecretsResponse.decode(
-                encodeCBOR(
-                    .map([
-                        CBORPair(key: .text("Recover1"), value: .text("NoGuesses"))
-                    ]))) == .recover1(.noGuesses))
+                CBOR.map([
+                        "Recover1": .textString("NoGuesses")
+                    ]).encode()) == .recover1(.noGuesses))
 
-        let signed = CBORValue.map([
-            CBORPair(key: .text("public_key"), value: .bytes([UInt8](repeating: 1, count: 32))),
-            CBORPair(key: .text("verifying_key"), value: .bytes([UInt8](repeating: 2, count: 32))),
-            CBORPair(key: .text("signature"), value: .bytes([UInt8](repeating: 3, count: 64))),
+        let signed = CBOR.map([
+            "public_key": .byteString([UInt8](repeating: 1, count: 32)),
+            "verifying_key": .byteString([UInt8](repeating: 2, count: 32)),
+            "signature": .byteString([UInt8](repeating: 3, count: 64)),
         ])
-        let proof = CBORValue.map([
-            CBORPair(key: .text("c"), value: .bytes([UInt8](repeating: 4, count: 32))),
-            CBORPair(key: .text("beta_z"), value: .bytes([UInt8](repeating: 5, count: 32))),
+        let proof = CBOR.map([
+            "c": .byteString([UInt8](repeating: 4, count: 32)),
+            "beta_z": .byteString([UInt8](repeating: 5, count: 32)),
         ])
         let recover2 = try SecretsResponse.decode(
-            encodeCBOR(
-                .map([
-                    CBORPair(
-                        key: .text("Recover2"),
-                        value: .map([
-                            CBORPair(
-                                key: .text("Ok"),
-                                value: .map([
-                                    CBORPair(key: .text("oprf_signed_public_key"), value: signed),
-                                    CBORPair(
-                                        key: .text("oprf_blinded_result"),
-                                        value: .bytes([UInt8](repeating: 6, count: 32))),
-                                    CBORPair(key: .text("oprf_proof"), value: proof),
-                                    CBORPair(
-                                        key: .text("unlock_key_commitment"),
-                                        value: .bytes([UInt8](repeating: 7, count: 32))),
-                                    CBORPair(key: .text("num_guesses"), value: .unsigned(5)),
-                                    CBORPair(key: .text("guess_count"), value: .unsigned(1)),
-                                ]))
-                        ]))
-                ])))
+            CBOR.map([
+                    "Recover2": .map([
+                            "Ok": .map([
+                                    "oprf_signed_public_key": signed,
+                                    "oprf_blinded_result": .byteString([UInt8](repeating: 6, count: 32)),
+                                    "oprf_proof": proof,
+                                    "unlock_key_commitment": .byteString([UInt8](repeating: 7, count: 32)),
+                                    "num_guesses": .unsignedInt(5),
+                                    "guess_count": .unsignedInt(1),
+                                ])
+                        ])
+                ]).encode())
         #expect(
             recover2
                 == .recover2(
@@ -281,42 +273,30 @@ struct RealmProtocolTests {
                         numGuesses: 5, guessCount: 1)))
 
         let badTag = try SecretsResponse.decode(
-            encodeCBOR(
-                .map([
-                    CBORPair(
-                        key: .text("Recover3"),
-                        value: .map([
-                            CBORPair(
-                                key: .text("BadUnlockKeyTag"),
-                                value: .map([
-                                    CBORPair(key: .text("guesses_remaining"), value: .unsigned(2))
-                                ]))
-                        ]))
-                ])))
+            CBOR.map([
+                    "Recover3": .map([
+                            "BadUnlockKeyTag": .map([
+                                    "guesses_remaining": .unsignedInt(2)
+                                ])
+                        ])
+                ]).encode())
         #expect(badTag == .recover3(.badUnlockKeyTag(guessesRemaining: 2)))
     }
 
     @Test func paddedSecretsResponse() throws {
-        let inner = encodeCBOR(
-            .map([
-                CBORPair(
-                    key: .text("Recover1"),
-                    value: .map([
-                        CBORPair(
-                            key: .text("Ok"),
-                            value: .map([
-                                CBORPair(
-                                    key: .text("version"), value: .bytes([UInt8](repeating: 9, count: 16)))
-                            ]))
-                    ]))
-            ]))
+        let inner = CBOR.map([
+                "Recover1": .map([
+                        "Ok": .map([
+                                "version": .byteString([UInt8](repeating: 9, count: 16))
+                            ])
+                    ])
+            ]).encode()
         var padded = inner
         padded += [UInt8](repeating: 0, count: PaddedSecretsResponse.maximumLength - inner.count)
-        let envelope = encodeCBOR(
-            .map([
-                CBORPair(key: .text("unpadded_length"), value: .unsigned(UInt64(inner.count))),
-                CBORPair(key: .text("padded_bytes"), value: .bytes(padded)),
-            ]))
+        let envelope = CBOR.map([
+                "unpadded_length": .unsignedInt(UInt64(inner.count)),
+                "padded_bytes": .byteString(padded),
+            ]).encode()
         let decoded = try PaddedSecretsResponse.decode(envelope)
         #expect(decoded.unpaddedLength == UInt16(inner.count))
         #expect(try decoded.unpack() == .recover1(.ok(version: [UInt8](repeating: 9, count: 16))))
@@ -329,36 +309,24 @@ struct RealmProtocolTests {
             encrypted: .transport(ciphertext: [0xaa, 0xbb]))
         let value = try decodeCBOR(request.encoded())
         #expect(
-            value.field("auth_token") == .text("token"))
-        #expect(value.field("session_id") == .unsigned(7))
-        #expect(value.field("kind") == .text("SecretsRequest"))
+            value["auth_token"] == .textString("token"))
+        #expect(value["session_id"] == .unsignedInt(7))
+        #expect(value["kind"] == .textString("SecretsRequest"))
 
-        let handshakeResponse = encodeCBOR(
-            .map([
-                CBORPair(
-                    key: .text("Ok"),
-                    value: .map([
-                        CBORPair(
-                            key: .text("Handshake"),
-                            value: .map([
-                                CBORPair(
-                                    key: .text("handshake"),
-                                    value: .map([
-                                        CBORPair(
-                                            key: .text("server_ephemeral_public"),
-                                            value: .bytes([UInt8](repeating: 2, count: 32))),
-                                        CBORPair(
-                                            key: .text("payload_ciphertext"), value: .bytes([9, 9])),
-                                    ])),
-                                CBORPair(
-                                    key: .text("session_lifetime"),
-                                    value: .map([
-                                        CBORPair(key: .text("secs"), value: .unsigned(30)),
-                                        CBORPair(key: .text("nanos"), value: .unsigned(0)),
-                                    ])),
-                            ]))
-                    ]))
-            ]))
+        let handshakeResponse = CBOR.map([
+                "Ok": .map([
+                        "Handshake": .map([
+                                "handshake": .map([
+                                        "server_ephemeral_public": .byteString([UInt8](repeating: 2, count: 32)),
+                                        "payload_ciphertext": .byteString([9, 9]),
+                                    ]),
+                                "session_lifetime": .map([
+                                        "secs": .unsignedInt(30),
+                                        "nanos": .unsignedInt(0),
+                                    ]),
+                            ])
+                    ])
+            ]).encode()
         #expect(
             try ClientResponse.decode(handshakeResponse)
                 == .okHandshake(
@@ -367,20 +335,15 @@ struct RealmProtocolTests {
                         payloadCiphertext: [9, 9], sessionLifetimeSeconds: 30,
                         sessionLifetimeNanos: 0)))
         #expect(
-            try ClientResponse.decode(encodeCBOR(.text("InvalidAuth"))) == .invalidAuth)
+            try ClientResponse.decode(CBOR.textString("InvalidAuth").encode()) == .invalidAuth)
         #expect(
             try ClientResponse.decode(
-                encodeCBOR(
-                    .map([
-                        CBORPair(
-                            key: .text("Ok"),
-                            value: .map([
-                                CBORPair(
-                                    key: .text("Transport"),
-                                    value: .map([
-                                        CBORPair(key: .text("ciphertext"), value: .bytes([1, 2, 3]))
-                                    ]))
-                            ]))
-                    ]))) == .okTransport(ciphertext: [1, 2, 3]))
+                CBOR.map([
+                        "Ok": .map([
+                                "Transport": .map([
+                                        "ciphertext": .byteString([1, 2, 3])
+                                    ])
+                            ])
+                    ]).encode()) == .okTransport(ciphertext: [1, 2, 3]))
     }
 }

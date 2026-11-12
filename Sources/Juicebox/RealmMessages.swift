@@ -1,3 +1,4 @@
+import CBOR
 /// The Juicebox realm wire messages this client needs: the recovery phases,
 /// the padded hardware-realm envelope, and the Noise wrapper. Encodings match
 /// serde's CBOR representation (structs as maps, externally tagged enums as
@@ -25,21 +26,21 @@ enum SecretsRequest: Equatable, Sendable {
     func encoded() -> [UInt8] {
         switch self {
         case .recover1:
-            return encodeCBOR(.text("Recover1"))
+            return CBOR.textString("Recover1").encode()
         case .recover2(let version, let blindedInput):
-            return encodeCBOR(.map([
-                CBORPair(key: .text("Recover2"), value: .map([
-                    CBORPair(key: .text("version"), value: .bytes(version)),
-                    CBORPair(key: .text("oprf_blinded_input"), value: .bytes(blindedInput)),
-                ])),
-            ]))
+            return CBOR.map([
+                "Recover2": .map([
+                    "version": .byteString(version),
+                    "oprf_blinded_input": .byteString(blindedInput),
+                ]),
+            ]).encode()
         case .recover3(let version, let unlockKeyTag):
-            return encodeCBOR(.map([
-                CBORPair(key: .text("Recover3"), value: .map([
-                    CBORPair(key: .text("version"), value: .bytes(version)),
-                    CBORPair(key: .text("unlock_key_tag"), value: .bytes(unlockKeyTag)),
-                ])),
-            ]))
+            return CBOR.map([
+                "Recover3": .map([
+                    "version": .byteString(version),
+                    "unlock_key_tag": .byteString(unlockKeyTag),
+                ]),
+            ]).encode()
         }
     }
 }
@@ -89,18 +90,18 @@ enum SecretsResponse: Equatable, Sendable {
 
 // MARK: Recovery phase responses
 
-private func decodeRecover1(_ value: CBORValue) throws -> Recover1Response {
-    if value == .text("NotRegistered") { return .notRegistered }
-    if value == .text("NoGuesses") { return .noGuesses }
+private func decodeRecover1(_ value: CBOR) throws -> Recover1Response {
+    if value == .textString("NotRegistered") { return .notRegistered }
+    if value == .textString("NoGuesses") { return .noGuesses }
     let (variant, body) = try enumVariant(value)
     guard variant == "Ok" else { throw RealmMessageError.malformed }
     return .ok(version: try bytesField(body, "version", count: 16))
 }
 
-private func decodeRecover2(_ value: CBORValue) throws -> Recover2Response {
-    if value == .text("VersionMismatch") { return .versionMismatch }
-    if value == .text("NotRegistered") { return .notRegistered }
-    if value == .text("NoGuesses") { return .noGuesses }
+private func decodeRecover2(_ value: CBOR) throws -> Recover2Response {
+    if value == .textString("VersionMismatch") { return .versionMismatch }
+    if value == .textString("NotRegistered") { return .notRegistered }
+    if value == .textString("NoGuesses") { return .noGuesses }
     let (variant, body) = try enumVariant(value)
     guard variant == "Ok" else { throw RealmMessageError.malformed }
 
@@ -120,10 +121,10 @@ private func decodeRecover2(_ value: CBORValue) throws -> Recover2Response {
         guessCount: try u16Field(body, "guess_count"))
 }
 
-private func decodeRecover3(_ value: CBORValue) throws -> Recover3Response {
-    if value == .text("VersionMismatch") { return .versionMismatch }
-    if value == .text("NotRegistered") { return .notRegistered }
-    if value == .text("NoGuesses") { return .noGuesses }
+private func decodeRecover3(_ value: CBOR) throws -> Recover3Response {
+    if value == .textString("VersionMismatch") { return .versionMismatch }
+    if value == .textString("NotRegistered") { return .notRegistered }
+    if value == .textString("NoGuesses") { return .noGuesses }
     let (variant, body) = try enumVariant(value)
     if variant == "BadUnlockKeyTag" {
         return .badUnlockKeyTag(guessesRemaining: try u16Field(body, "guesses_remaining"))
@@ -163,25 +164,22 @@ enum NoiseRequest: Equatable, Sendable {
     case handshake(clientEphemeralPublic: [UInt8], payloadCiphertext: [UInt8])
     case transport(ciphertext: [UInt8])
 
-    var encodedValue: CBORValue {
+    var encodedValue: CBOR {
         switch self {
         case .handshake(let clientEphemeralPublic, let payloadCiphertext):
             return .map([
-                CBORPair(key: .text("Handshake"), value: .map([
-                    CBORPair(key: .text("handshake"), value: .map([
-                        CBORPair(
-                            key: .text("client_ephemeral_public"),
-                            value: .bytes(clientEphemeralPublic)),
-                        CBORPair(
-                            key: .text("payload_ciphertext"), value: .bytes(payloadCiphertext)),
-                    ])),
-                ])),
+                "Handshake": .map([
+                    "handshake": .map([
+                        "client_ephemeral_public": .byteString(clientEphemeralPublic),
+                        "payload_ciphertext": .byteString(payloadCiphertext),
+                    ]),
+                ]),
             ])
         case .transport(let ciphertext):
             return .map([
-                CBORPair(key: .text("Transport"), value: .map([
-                    CBORPair(key: .text("ciphertext"), value: .bytes(ciphertext)),
-                ])),
+                "Transport": .map([
+                    "ciphertext": .byteString(ciphertext),
+                ]),
             ])
         }
     }
@@ -200,13 +198,13 @@ struct ClientRequest: Sendable {
     let encrypted: NoiseRequest
 
     func encoded() -> [UInt8] {
-        encodeCBOR(.map([
-            CBORPair(key: .text("realm"), value: .bytes(realmId)),
-            CBORPair(key: .text("auth_token"), value: .text(authToken)),
-            CBORPair(key: .text("session_id"), value: .unsigned(UInt64(sessionId))),
-            CBORPair(key: .text("kind"), value: .text(kind.rawValue)),
-            CBORPair(key: .text("encrypted"), value: encrypted.encodedValue),
-        ]))
+        CBOR.map([
+            "realm": .byteString(realmId),
+            "auth_token": .textString(authToken),
+            "session_id": .unsignedInt(UInt64(sessionId)),
+            "kind": .textString(kind.rawValue),
+            "encrypted": encrypted.encodedValue,
+        ]).encode()
     }
 }
 
@@ -230,7 +228,7 @@ enum ClientResponse: Equatable, Sendable {
 
     static func decode(_ bytes: [UInt8]) throws -> ClientResponse {
         let value = try decodeCBOR(bytes)
-        if case .text(let name) = value {
+        if case .textString(let name) = value {
             switch name {
             case "Unavailable": return .unavailable
             case "InvalidAuth": return .invalidAuth
@@ -268,36 +266,36 @@ enum ClientResponse: Equatable, Sendable {
 
 // MARK: Field helpers
 
-private func enumVariant(_ value: CBORValue) throws -> (String, CBORValue) {
-    guard case .map(let pairs) = value, pairs.count == 1,
-        case .text(let name) = pairs[0].key
+private func enumVariant(_ value: CBOR) throws -> (String, CBOR) {
+    guard case .map(let fields) = value, fields.count == 1,
+        let (key, body) = fields.first, let name = key.string
     else { throw RealmMessageError.malformed }
-    return (name, pairs[0].value)
+    return (name, body)
 }
 
-private func structField(_ value: CBORValue, _ name: String) throws -> CBORValue {
-    guard let field = value.field(name) else { throw RealmMessageError.malformed }
+private func structField(_ value: CBOR, _ name: String) throws -> CBOR {
+    guard let field = value[name] else { throw RealmMessageError.malformed }
     return field
 }
 
 private func bytesField(
-    _ value: CBORValue, _ name: String, count: Int? = nil
+    _ value: CBOR, _ name: String, count: Int? = nil
 ) throws -> [UInt8] {
-    guard let bytes = try structField(value, name).bytesValue else {
+    guard let bytes = try structField(value, name).bytes else {
         throw RealmMessageError.malformed
     }
     if let count, bytes.count != count { throw RealmMessageError.malformed }
     return bytes
 }
 
-private func u16Field(_ value: CBORValue, _ name: String) throws -> UInt16 {
+private func u16Field(_ value: CBOR, _ name: String) throws -> UInt16 {
     let number = try u64Field(value, name)
     guard number <= UInt64(UInt16.max) else { throw RealmMessageError.malformed }
     return UInt16(number)
 }
 
-private func u64Field(_ value: CBORValue, _ name: String) throws -> UInt64 {
-    guard let number = try structField(value, name).unsignedValue else {
+private func u64Field(_ value: CBOR, _ name: String) throws -> UInt64 {
+    guard let number = try structField(value, name).uint64 else {
         throw RealmMessageError.malformed
     }
     return number

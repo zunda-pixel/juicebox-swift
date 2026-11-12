@@ -1,3 +1,4 @@
+import CBOR
 import Crypto
 import Foundation
 import Testing
@@ -175,13 +176,13 @@ struct HardwareRecoveryTests {
             }
 
             let clientRequest = try decodeCBOR(request.body)
-            guard let sessionId = clientRequest.field("session_id")?.unsignedValue,
-                let encrypted = clientRequest.field("encrypted")
+            guard let sessionId = clientRequest["session_id"]?.uint64,
+                let encrypted = clientRequest["encrypted"]
             else { return JuiceboxHTTPResponse(statusCode: 400, body: []) }
 
-            if let handshake = encrypted.field("Handshake")?.field("handshake"),
-                let ephemeral = handshake.field("client_ephemeral_public")?.bytesValue,
-                let payloadCiphertext = handshake.field("payload_ciphertext")?.bytesValue
+            if let handshake = encrypted["Handshake"]?["handshake"],
+                let ephemeral = handshake["client_ephemeral_public"]?.bytes,
+                let payloadCiphertext = handshake["payload_ciphertext"]?.bytes
             {
                 var server = try ServerHandshake.begin(
                     staticSecret: realm.noiseStaticSecret!, clientEphemeralPublic: ephemeral,
@@ -196,28 +197,24 @@ struct HardwareRecoveryTests {
                 sessions[UInt32(sessionId)] = transport
                 return JuiceboxHTTPResponse(
                     statusCode: 200,
-                    body: encodeCBOR(.map([
-                        CBORPair(key: .text("Ok"), value: .map([
-                            CBORPair(key: .text("Handshake"), value: .map([
-                                CBORPair(key: .text("handshake"), value: .map([
-                                    CBORPair(
-                                        key: .text("server_ephemeral_public"),
-                                        value: .bytes(server.serverEphemeralPublic)),
-                                    CBORPair(
-                                        key: .text("payload_ciphertext"),
-                                        value: .bytes(ciphertext)),
-                                ])),
-                                CBORPair(key: .text("session_lifetime"), value: .map([
-                                    CBORPair(key: .text("secs"), value: .unsigned(30)),
-                                    CBORPair(key: .text("nanos"), value: .unsigned(0)),
-                                ])),
-                            ])),
-                        ])),
-                    ])))
+                    body: CBOR.map([
+                        "Ok": .map([
+                            "Handshake": .map([
+                                "handshake": .map([
+                                    "server_ephemeral_public": .byteString(server.serverEphemeralPublic),
+                                    "payload_ciphertext": .byteString(ciphertext),
+                                ]),
+                                "session_lifetime": .map([
+                                    "secs": .unsignedInt(30),
+                                    "nanos": .unsignedInt(0),
+                                ]),
+                            ]),
+                        ]),
+                    ]).encode())
             }
 
-            guard let transportCiphertext = encrypted.field("Transport")?.field("ciphertext")?
-                .bytesValue,
+            guard let transportCiphertext = encrypted["Transport"]?["ciphertext"]?
+                .bytes,
                 let transport = sessions[UInt32(sessionId)]
             else { return JuiceboxHTTPResponse(statusCode: 400, body: []) }
             let plaintext = try transport.open(transportCiphertext)
@@ -225,47 +222,45 @@ struct HardwareRecoveryTests {
             let responseCiphertext = try transport.seal(paddedEnvelope(inner))
             return JuiceboxHTTPResponse(
                 statusCode: 200,
-                body: encodeCBOR(.map([
-                    CBORPair(key: .text("Ok"), value: .map([
-                        CBORPair(key: .text("Transport"), value: .map([
-                            CBORPair(key: .text("ciphertext"), value: .bytes(responseCiphertext)),
-                        ])),
-                    ])),
-                ])))
+                body: CBOR.map([
+                    "Ok": .map([
+                        "Transport": .map([
+                            "ciphertext": .byteString(responseCiphertext),
+                        ]),
+                    ]),
+                ]).encode())
         }
 
         private func paddedEnvelope(_ inner: [UInt8]) -> [UInt8] {
             var padded = inner
             padded += [UInt8](repeating: 0, count: PaddedSecretsResponse.maximumLength - inner.count)
-            return encodeCBOR(.map([
-                CBORPair(key: .text("unpadded_length"), value: .unsigned(UInt64(inner.count))),
-                CBORPair(key: .text("padded_bytes"), value: .bytes(padded)),
-            ]))
+            return CBOR.map([
+                "unpadded_length": .unsignedInt(UInt64(inner.count)),
+                "padded_bytes": .byteString(padded),
+            ]).encode()
         }
 
-        private func response(for realm: RealmFixture, request: CBORValue) throws -> [UInt8] {
-            if request == .text("Recover1") {
-                return encodeCBOR(.map([
-                    CBORPair(key: .text("Recover1"), value: .map([
-                        CBORPair(key: .text("Ok"), value: .map([
-                            CBORPair(
-                                key: .text("version"),
-                                value: .bytes(HardwareRecoveryTests.version)),
-                        ])),
-                    ])),
-                ]))
+        private func response(for realm: RealmFixture, request: CBOR) throws -> [UInt8] {
+            if request == .textString("Recover1") {
+                return CBOR.map([
+                    "Recover1": .map([
+                        "Ok": .map([
+                            "version": .byteString(HardwareRecoveryTests.version),
+                        ]),
+                    ]),
+                ]).encode()
             }
-            if let body = request.field("Recover2") {
+            if let body = request["Recover2"] {
                 return try recover2(realm: realm, body: body)
             }
-            if let body = request.field("Recover3") {
+            if let body = request["Recover3"] {
                 return try recover3(realm: realm, body: body)
             }
             throw RealmMessageError.malformed
         }
 
-        private func recover2(realm: RealmFixture, body: CBORValue) throws -> [UInt8] {
-            guard let blindedInputBytes = body.field("oprf_blinded_input")?.bytesValue,
+        private func recover2(realm: RealmFixture, body: CBOR) throws -> [UInt8] {
+            guard let blindedInputBytes = body["oprf_blinded_input"]?.bytes,
                 let blindedInput = try? OPRF.BlindedInput(compressed: blindedInputBytes)
             else { return [] }
             let publicKey = OPRF.publicKey(for: realm.oprfShare)
@@ -281,60 +276,48 @@ struct HardwareRecoveryTests {
             message += publicKey
             let signature = try signer.signature(for: message)
 
-            return encodeCBOR(.map([
-                CBORPair(key: .text("Recover2"), value: .map([
-                    CBORPair(key: .text("Ok"), value: .map([
-                        CBORPair(key: .text("oprf_signed_public_key"), value: .map([
-                            CBORPair(key: .text("public_key"), value: .bytes(publicKey)),
-                            CBORPair(
-                                key: .text("verifying_key"),
-                                value: .bytes(Array(signer.publicKey.rawRepresentation))),
-                            CBORPair(key: .text("signature"), value: .bytes(Array(signature))),
-                        ])),
-                        CBORPair(
-                            key: .text("oprf_blinded_result"),
-                            value: .bytes(blindedOutput.compressed)),
-                        CBORPair(key: .text("oprf_proof"), value: .map([
-                            CBORPair(key: .text("c"), value: .bytes(proof.c.bytes)),
-                            CBORPair(key: .text("beta_z"), value: .bytes(proof.betaZ.bytes)),
-                        ])),
-                        CBORPair(
-                            key: .text("unlock_key_commitment"),
-                            value: .bytes(realm.unlockKeyCommitment)),
-                        CBORPair(key: .text("num_guesses"), value: .unsigned(UInt64(realm.numGuesses))),
-                        CBORPair(key: .text("guess_count"), value: .unsigned(UInt64(realm.guessCount))),
-                    ])),
-                ])),
-            ]))
+            return CBOR.map([
+                "Recover2": .map([
+                    "Ok": .map([
+                        "oprf_signed_public_key": .map([
+                            "public_key": .byteString(publicKey),
+                            "verifying_key": .byteString(Array(signer.publicKey.rawRepresentation)),
+                            "signature": .byteString(Array(signature)),
+                        ]),
+                        "oprf_blinded_result": .byteString(blindedOutput.compressed),
+                        "oprf_proof": .map([
+                            "c": .byteString(proof.c.bytes),
+                            "beta_z": .byteString(proof.betaZ.bytes),
+                        ]),
+                        "unlock_key_commitment": .byteString(realm.unlockKeyCommitment),
+                        "num_guesses": .unsignedInt(UInt64(realm.numGuesses)),
+                        "guess_count": .unsignedInt(UInt64(realm.guessCount)),
+                    ]),
+                ]),
+            ]).encode()
         }
 
-        private func recover3(realm: RealmFixture, body: CBORValue) throws -> [UInt8] {
-            guard let tag = body.field("unlock_key_tag")?.bytesValue else { return [] }
+        private func recover3(realm: RealmFixture, body: CBOR) throws -> [UInt8] {
+            guard let tag = body["unlock_key_tag"]?.bytes else { return [] }
             let expected = JuiceboxKeys.unlockKeyTag(unlockKey: realm.unlockKey, realmId: realm.id)
             guard constantTimeEqual(tag, expected) else {
-                return encodeCBOR(.map([
-                    CBORPair(key: .text("Recover3"), value: .map([
-                        CBORPair(key: .text("BadUnlockKeyTag"), value: .map([
-                            CBORPair(key: .text("guesses_remaining"), value: .unsigned(4)),
-                        ])),
-                    ])),
-                ]))
+                return CBOR.map([
+                    "Recover3": .map([
+                        "BadUnlockKeyTag": .map([
+                            "guesses_remaining": .unsignedInt(4),
+                        ]),
+                    ]),
+                ]).encode()
             }
-            return encodeCBOR(.map([
-                CBORPair(key: .text("Recover3"), value: .map([
-                    CBORPair(key: .text("Ok"), value: .map([
-                        CBORPair(
-                            key: .text("encryption_key_scalar_share"),
-                            value: .bytes(realm.scalarShare.bytes)),
-                        CBORPair(
-                            key: .text("encrypted_secret"),
-                            value: .bytes(realm.encryptedSecret)),
-                        CBORPair(
-                            key: .text("encrypted_secret_commitment"),
-                            value: .bytes(realm.secretCommitment)),
-                    ])),
-                ])),
-            ]))
+            return CBOR.map([
+                "Recover3": .map([
+                    "Ok": .map([
+                        "encryption_key_scalar_share": .byteString(realm.scalarShare.bytes),
+                        "encrypted_secret": .byteString(realm.encryptedSecret),
+                        "encrypted_secret_commitment": .byteString(realm.secretCommitment),
+                    ]),
+                ]),
+            ]).encode()
         }
 
         private func constantTimeEqual(_ lhs: [UInt8], _ rhs: [UInt8]) -> Bool {

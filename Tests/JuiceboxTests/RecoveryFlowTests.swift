@@ -1,3 +1,4 @@
+import CBOR
 import Crypto
 import Foundation
 import Testing
@@ -49,15 +50,15 @@ struct RecoveryFlowTests {
                 return JuiceboxHTTPResponse(statusCode: 401, body: [])
             }
             let value = try decodeCBOR(request.body)
-            if value == .text("Recover1") {
+            if value == .textString("Recover1") {
                 return JuiceboxHTTPResponse(
                     statusCode: 200, body: encodeRecover1Ok(version: Self.versionForNetwork))
             }
-            if let body = value.field("Recover2") {
+            if let body = value["Recover2"] {
                 return JuiceboxHTTPResponse(
                     statusCode: 200, body: try recover2(realm: realm, body: body))
             }
-            if let body = value.field("Recover3") {
+            if let body = value["Recover3"] {
                 return JuiceboxHTTPResponse(
                     statusCode: 200, body: try recover3(realm: realm, body: body))
             }
@@ -66,8 +67,8 @@ struct RecoveryFlowTests {
 
         static let versionForNetwork = RecoveryFlowTests.version
 
-        private func recover2(realm: FakeRealm, body: CBORValue) throws -> [UInt8] {
-            guard let blindedInputBytes = body.field("oprf_blinded_input")?.bytesValue,
+        private func recover2(realm: FakeRealm, body: CBOR) throws -> [UInt8] {
+            guard let blindedInputBytes = body["oprf_blinded_input"]?.bytes,
                 let blindedInput = try? OPRF.BlindedInput(compressed: blindedInputBytes)
             else { return [] }
             let publicKey = OPRF.publicKey(for: realm.oprfShare)
@@ -84,60 +85,48 @@ struct RecoveryFlowTests {
             message += publicKey
             let signature = try realm.signingKey.signature(for: message)
 
-            return encodeCBOR(.map([
-                CBORPair(key: .text("Recover2"), value: .map([
-                    CBORPair(key: .text("Ok"), value: .map([
-                        CBORPair(key: .text("oprf_signed_public_key"), value: .map([
-                            CBORPair(key: .text("public_key"), value: .bytes(publicKey)),
-                            CBORPair(
-                                key: .text("verifying_key"),
-                                value: .bytes(Array(realm.signingKey.publicKey.rawRepresentation))),
-                            CBORPair(key: .text("signature"), value: .bytes(Array(signature))),
-                        ])),
-                        CBORPair(
-                            key: .text("oprf_blinded_result"),
-                            value: .bytes(blindedOutput.compressed)),
-                        CBORPair(key: .text("oprf_proof"), value: .map([
-                            CBORPair(key: .text("c"), value: .bytes(proof.c.bytes)),
-                            CBORPair(key: .text("beta_z"), value: .bytes(proof.betaZ.bytes)),
-                        ])),
-                        CBORPair(
-                            key: .text("unlock_key_commitment"),
-                            value: .bytes(realm.unlockKeyCommitment)),
-                        CBORPair(key: .text("num_guesses"), value: .unsigned(UInt64(realm.numGuesses))),
-                        CBORPair(key: .text("guess_count"), value: .unsigned(UInt64(realm.guessCount))),
-                    ])),
-                ])),
-            ]))
+            return CBOR.map([
+                "Recover2": .map([
+                    "Ok": .map([
+                        "oprf_signed_public_key": .map([
+                            "public_key": .byteString(publicKey),
+                            "verifying_key": .byteString(Array(realm.signingKey.publicKey.rawRepresentation)),
+                            "signature": .byteString(Array(signature)),
+                        ]),
+                        "oprf_blinded_result": .byteString(blindedOutput.compressed),
+                        "oprf_proof": .map([
+                            "c": .byteString(proof.c.bytes),
+                            "beta_z": .byteString(proof.betaZ.bytes),
+                        ]),
+                        "unlock_key_commitment": .byteString(realm.unlockKeyCommitment),
+                        "num_guesses": .unsignedInt(UInt64(realm.numGuesses)),
+                        "guess_count": .unsignedInt(UInt64(realm.guessCount)),
+                    ]),
+                ]),
+            ]).encode()
         }
 
-        private func recover3(realm: FakeRealm, body: CBORValue) throws -> [UInt8] {
-            guard let tag = body.field("unlock_key_tag")?.bytesValue else { return [] }
+        private func recover3(realm: FakeRealm, body: CBOR) throws -> [UInt8] {
+            guard let tag = body["unlock_key_tag"]?.bytes else { return [] }
             let expected = JuiceboxKeys.unlockKeyTag(unlockKey: realm.unlockKey, realmId: realm.id)
             guard constantTimeEqual(tag, expected) else {
-                return encodeCBOR(.map([
-                    CBORPair(key: .text("Recover3"), value: .map([
-                        CBORPair(key: .text("BadUnlockKeyTag"), value: .map([
-                            CBORPair(key: .text("guesses_remaining"), value: .unsigned(4)),
-                        ])),
-                    ])),
-                ]))
+                return CBOR.map([
+                    "Recover3": .map([
+                        "BadUnlockKeyTag": .map([
+                            "guesses_remaining": .unsignedInt(4),
+                        ]),
+                    ]),
+                ]).encode()
             }
-            return encodeCBOR(.map([
-                CBORPair(key: .text("Recover3"), value: .map([
-                    CBORPair(key: .text("Ok"), value: .map([
-                        CBORPair(
-                            key: .text("encryption_key_scalar_share"),
-                            value: .bytes(realm.scalarShare.bytes)),
-                        CBORPair(
-                            key: .text("encrypted_secret"),
-                            value: .bytes(realm.encryptedSecret)),
-                        CBORPair(
-                            key: .text("encrypted_secret_commitment"),
-                            value: .bytes(realm.secretCommitment)),
-                    ])),
-                ])),
-            ]))
+            return CBOR.map([
+                "Recover3": .map([
+                    "Ok": .map([
+                        "encryption_key_scalar_share": .byteString(realm.scalarShare.bytes),
+                        "encrypted_secret": .byteString(realm.encryptedSecret),
+                        "encrypted_secret_commitment": .byteString(realm.secretCommitment),
+                    ]),
+                ]),
+            ]).encode()
         }
 
         private func constantTimeEqual(_ lhs: [UInt8], _ rhs: [UInt8]) -> Bool {
@@ -149,13 +138,13 @@ struct RecoveryFlowTests {
     }
 
     static func encodeRecover1Ok(version: [UInt8]) -> [UInt8] {
-        encodeCBOR(.map([
-            CBORPair(key: .text("Recover1"), value: .map([
-                CBORPair(key: .text("Ok"), value: .map([
-                    CBORPair(key: .text("version"), value: .bytes(version)),
-                ])),
-            ])),
-        ]))
+        CBOR.map([
+            "Recover1": .map([
+                "Ok": .map([
+                    "version": .byteString(version),
+                ]),
+            ]),
+        ]).encode()
     }
 
     // MARK: Setup
@@ -237,7 +226,7 @@ struct RecoveryFlowTests {
         }
 
         func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-            if try decodeCBOR(request.body) == .text("Recover1") {
+            if try decodeCBOR(request.body) == .textString("Recover1") {
                 return try await network.send(request)
             }
             pinRequests += 1

@@ -1,5 +1,5 @@
 {
-  "originHash" : "7bf4f6327d91dc7bc0a140a586c388daddad5cf7c3a5629ef388e1bb39405ac8",
+  "originHash" : "6e980317c3978ca4a84b4169aef800ed3a0bc5f04538ac8d5506b149d18a6097",
   "pins" : [
     {
       "identity" : "blake-hash",
@@ -25,6 +25,15 @@
       "state" : {
         "revision" : "917b472dbe53ba699cbb0495f9a95a084bc6364d",
         "version" : "1.7.4"
+      }
+    },
+    {
+      "identity" : "swift-cbor",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/brokenhandsio/swift-cbor.git",
+      "state" : {
+        "revision" : "52432a1118bcbabb9a973330c3af85d8ddf3f015",
+        "version" : "0.2.0"
       }
     },
     {
