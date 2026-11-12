@@ -1,12 +1,12 @@
 import Crypto
 import Foundation
-import XCTest
+import Testing
 
 @testable import Juicebox
 
 /// Drives the full three-phase recovery against fake realms that hold Shamir
 /// shares of the OPRF key and the user-secret scalar.
-final class RecoveryFlowTests: XCTestCase {
+struct RecoveryFlowTests {
     private static let version = [UInt8](repeating: 5, count: 16)
     private static let pin = Array("1234".utf8)
     private static let userSecret = Array("a 64-byte user secret".utf8) + [UInt8](
@@ -251,14 +251,14 @@ final class RecoveryFlowTests: XCTestCase {
 
     // MARK: Tests
 
-    func testRecoverUserSecret() async throws {
+    @Test func recoverUserSecret() async throws {
         let (network, configuration, tokens) = try makeNetwork()
         let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
         let secret = try await recovery.recover(pin: Self.pin, transport: network)
-        XCTAssertEqual(secret, Self.userSecret)
+        #expect(secret == Self.userSecret)
     }
 
-    func testCancellationStopsBeforeTheNextPINRequest() async throws {
+    @Test func cancellationStopsBeforeTheNextPINRequest() async throws {
         let (network, configuration, tokens) = try makeNetwork()
         let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
         for mode in CancellingTransport.Mode.allCases {
@@ -268,15 +268,15 @@ final class RecoveryFlowTests: XCTestCase {
             }
             do {
                 _ = try await task.value
-                XCTFail("expected cancellation")
+                Issue.record("expected cancellation")
             } catch is CancellationError {
                 let requests = await transport.pinRequests
-                XCTAssertEqual(requests, 1)
+                #expect(requests == 1)
             }
         }
     }
 
-    func testRecoverWithOneRealmDown() async throws {
+    @Test func recoverWithOneRealmDown() async throws {
         let (network, configuration, tokens) = try makeNetwork()
         // Drop the second realm by pointing it at an unreachable address.
         let json = """
@@ -294,32 +294,32 @@ final class RecoveryFlowTests: XCTestCase {
         let degraded = try JuiceboxConfiguration.parse(Array(json.utf8))
         let recovery = JuiceboxRecovery(configuration: degraded, tokens: tokens)
         let secret = try await recovery.recover(pin: Self.pin, transport: network)
-        XCTAssertEqual(secret, Self.userSecret)
+        #expect(secret == Self.userSecret)
     }
 
-    func testWrongPinReportsGuesses() async throws {
+    @Test func wrongPinReportsGuesses() async throws {
         let (network, configuration, tokens) = try makeNetwork()
         let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
         do {
             _ = try await recovery.recover(pin: Array("0000".utf8), transport: network)
-            XCTFail("wrong PIN must fail")
+            Issue.record("wrong PIN must fail")
         } catch let error as JuiceboxRecoveryError {
-            XCTAssertEqual(error, .invalidPin(guessesRemaining: 4))
+            #expect(error == .invalidPin(guessesRemaining: 4))
         }
     }
 
-    func testMissingTokenIsInvalidAuth() async throws {
+    @Test func missingTokenIsInvalidAuth() async throws {
         let (network, configuration, _) = try makeNetwork()
         let recovery = JuiceboxRecovery(configuration: configuration, tokens: [:])
         do {
             _ = try await recovery.recover(pin: Self.pin, transport: network)
-            XCTFail("missing tokens must fail")
+            Issue.record("missing tokens must fail")
         } catch let error as JuiceboxRecoveryError {
-            XCTAssertEqual(error, .invalidAuth)
+            #expect(error == .invalidAuth)
         }
     }
 
-    func testTooFewRealmsIsTransientOrNotRegistered() async throws {
+    @Test func tooFewRealmsIsTransientOrNotRegistered() async throws {
         let (network, configuration, tokens) = try makeNetwork()
         let json = """
             {
@@ -337,9 +337,9 @@ final class RecoveryFlowTests: XCTestCase {
         let recovery = JuiceboxRecovery(configuration: degraded, tokens: tokens)
         do {
             _ = try await recovery.recover(pin: Self.pin, transport: network)
-            XCTFail("too few realms must fail")
+            Issue.record("too few realms must fail")
         } catch let error as JuiceboxRecoveryError {
-            XCTAssertEqual(error, .transient)
+            #expect(error == .transient)
         }
     }
 }

@@ -1,57 +1,55 @@
-import XCTest
+import Testing
 
 @testable import Juicebox
 
 /// Shamir sharing over scalars and Ristretto points, including threshold and
 /// duplicate handling.
-final class SecretSharingTests: XCTestCase {
-    func testScalarSharesRoundTrip() throws {
+struct SecretSharingTests {
+    @Test func scalarSharesRoundTrip() throws {
         let secret = RistrettoScalar.random()
         for count in 2...5 {
             for threshold in 2...count {
                 let shares = createShares(
                     secret: secret, threshold: threshold, count: count,
                     random: { RistrettoScalar.random() })
-                XCTAssertEqual(shares.count, count)
-                XCTAssertTrue(shares.allSatisfy { $0.secret != secret })
+                #expect(shares.count == count)
+                #expect(shares.allSatisfy { $0.secret != secret })
 
-                XCTAssertEqual(try recoverSecret(shares), secret)
+                #expect(try recoverSecret(shares) == secret)
                 for subset in combinations(shares, choose: threshold) {
-                    XCTAssertEqual(try recoverSecret(subset), secret)
+                    #expect(try recoverSecret(subset) == secret)
                 }
                 for subset in combinations(shares, choose: threshold - 1) {
-                    XCTAssertNotEqual(try recoverSecret(subset), secret)
+                    #expect(try recoverSecret(subset) != secret)
                 }
             }
         }
     }
 
-    func testPointSharesRoundTrip() throws {
+    @Test func pointSharesRoundTrip() throws {
         let secret = RistrettoPoint.hashToGroup(Array("shared secret".utf8))
         for count in 2...4 {
             for threshold in 2...count {
                 let shares = createShares(
                     secret: secret, threshold: threshold, count: count,
                     random: { RistrettoPoint.random() })
-                XCTAssertEqual(try recoverSecret(shares), secret)
+                #expect(try recoverSecret(shares) == secret)
                 for subset in combinations(shares, choose: threshold) {
-                    XCTAssertEqual(try recoverSecret(subset), secret)
+                    #expect(try recoverSecret(subset) == secret)
                 }
             }
         }
     }
 
-    func testDuplicateIndicesFail() {
+    @Test func duplicateIndicesFail() {
         let share = SecretShare(index: 1, secret: RistrettoScalar.random())
-        XCTAssertThrowsError(try recoverSecret([share, share])) { error in
-            XCTAssertEqual(error as? SecretSharingError, .duplicateShares)
-        }
+        #expect(throws: SecretSharingError.duplicateShares) { _ = try recoverSecret([share, share]) }
     }
 
-    func testSingleShareAtZero() throws {
+    @Test func singleShareAtZero() throws {
         let value = RistrettoScalar.random()
         let share = SecretShare(index: 1, secret: value)
-        XCTAssertEqual(try recoverSecret([share]), value)
+        #expect(try recoverSecret([share]) == value)
     }
 
     private func combinations<T>(_ items: [T], choose count: Int) -> [[T]] {

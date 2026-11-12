@@ -1,10 +1,10 @@
-import XCTest
+import Testing
 
 @testable import Juicebox
 
 /// Ristretto255 against RFC 9496's test vectors: multiples of the generator,
 /// invalid encodings, and the one-way map from uniform bytes.
-final class RistrettoTests: XCTestCase {
+struct RistrettoTests {
     private static func hex(_ string: String) -> [UInt8] {
         var out: [UInt8] = []
         var index = string.startIndex
@@ -55,36 +55,35 @@ final class RistrettoTests: XCTestCase {
 
     /// B[i] is the encoding of i times the generator, and each is also the
     /// previous point plus the generator.
-    func testMultiplesOfGenerator() {
-        XCTAssertEqual(
-            Self.hexString(RistrettoPoint.identity.compress()),
-            Self.multiples[0])
+    @Test func multiplesOfGenerator() {
+        #expect(
+            Self.hexString(RistrettoPoint.identity.compress()) == Self.multiples[0])
 
         for i in 1..<Self.multiples.count {
             let multiple = RistrettoPoint.basepoint.scalarMultiply(Self.scalar(UInt64(i)))
-            XCTAssertEqual(Self.hexString(multiple.compress()), Self.multiples[i], "B[\(i)]")
+            #expect(Self.hexString(multiple.compress()) == Self.multiples[i], "B[\(i)]")
         }
 
         var accumulated = RistrettoPoint.identity
         for i in 0..<Self.multiples.count {
-            XCTAssertEqual(
-                Self.hexString(accumulated.compress()), Self.multiples[i], "sum to B[\(i)]")
+            #expect(
+                Self.hexString(accumulated.compress()) == Self.multiples[i], "sum to B[\(i)]")
             accumulated = accumulated + RistrettoPoint.basepoint
         }
     }
 
-    func testCompressDecompressRoundTrip() {
+    @Test func compressDecompressRoundTrip() {
         var point = RistrettoPoint.identity
         for i in 0..<32 {
             let encoded = point.compress()
             let decoded = RistrettoPoint.decompress(encoded)
-            XCTAssertEqual(decoded?.compress(), encoded, "round trip \(i)")
+            #expect(decoded?.compress() == encoded, "round trip \(i)")
             point = point + RistrettoPoint.basepoint
         }
     }
 
     /// Every encoding the RFC lists must be rejected.
-    func testInvalidEncodings() {
+    @Test func invalidEncodings() {
         let invalid = [
             "e2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2df6",
             "00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -118,13 +117,13 @@ final class RistrettoTests: XCTestCase {
             "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
         ]
         for (index, encoding) in invalid.enumerated() {
-            XCTAssertNil(
-                RistrettoPoint.decompress(Self.hex(encoding)), "invalid encoding \(index)")
+            #expect(
+                RistrettoPoint.decompress(Self.hex(encoding)) == nil, "invalid encoding \(index)")
         }
     }
 
     /// The RFC's one-way map inputs and their encodings.
-    func testFromUniformBytes() {
+    @Test func fromUniformBytes() {
         let vectors = [
             (
                 "5d1be09e3d0c82fc538112490e35701979d99e06ca3e2b5b54bffe8b4dc772c1"
@@ -164,13 +163,13 @@ final class RistrettoTests: XCTestCase {
         ]
         for (index, (input, output)) in vectors.enumerated() {
             let point = RistrettoPoint.fromUniformBytes(Self.hex(input))
-            XCTAssertEqual(Self.hexString(point.compress()), output, "uniform vector \(index)")
+            #expect(Self.hexString(point.compress()) == output, "uniform vector \(index)")
         }
     }
 
     /// These four encodings are equivalent modulo the Ristretto rules, so
     /// the map must produce the same point.
-    func testUniformBytesCollapse() {
+    @Test func uniformBytesCollapse() {
         let inputs = [
             "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                 + "1200000000000000000000000000000000000000000000000000000000000000",
@@ -184,18 +183,17 @@ final class RistrettoTests: XCTestCase {
         let expected = "304282791023b73128d277bdcb5c7746ef2eac08dde9f2983379cb8e5ef0517f"
         for (index, input) in inputs.enumerated() {
             let point = RistrettoPoint.fromUniformBytes(Self.hex(input))
-            XCTAssertEqual(Self.hexString(point.compress()), expected, "collapse \(index)")
+            #expect(Self.hexString(point.compress()) == expected, "collapse \(index)")
         }
     }
 
     /// `2P = P + P`, and scalar multiplication is additive.
-    func testDoubleAndScalarArithmetic() {
+    @Test func doubleAndScalarArithmetic() {
         let point = RistrettoPoint.hashToGroup(Array("juicebox oprf test".utf8))
-        XCTAssertEqual(point.scalarMultiply(Self.scalar(2)), point + point)
-        XCTAssertEqual(
-            point.scalarMultiply(Self.scalar(3)),
-            point.scalarMultiply(Self.scalar(2)) + point)
-        XCTAssertEqual(point.scalarMultiply(.zero), RistrettoPoint.identity)
-        XCTAssertEqual(point.scalarMultiply(Self.scalar(1)), point)
+        #expect(point.scalarMultiply(Self.scalar(2)) == point + point)
+        #expect(
+            point.scalarMultiply(Self.scalar(3)) == point.scalarMultiply(Self.scalar(2)) + point)
+        #expect(point.scalarMultiply(.zero) == RistrettoPoint.identity)
+        #expect(point.scalarMultiply(Self.scalar(1)) == point)
     }
 }

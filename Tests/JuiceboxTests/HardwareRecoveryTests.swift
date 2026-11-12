@@ -1,11 +1,12 @@
 import Crypto
-import XCTest
+import Foundation
+import Testing
 
 @testable import Juicebox
 
 /// Recovery across two Noise NK hardware realms and one plain HTTP software
 /// realm, with a test-side Noise server built independently of the client.
-final class HardwareRecoveryTests: XCTestCase {
+struct HardwareRecoveryTests {
     private static let version = [UInt8](repeating: 5, count: 16)
     private static let pin = Array("13579".utf8)
     private static let secret = Array("two hardware realms".utf8) + [UInt8](
@@ -342,7 +343,7 @@ final class HardwareRecoveryTests: XCTestCase {
 
     // MARK: Tests
 
-    func testHardwareAndSoftwareRealmsTogether() async throws {
+    @Test func hardwareAndSoftwareRealmsTogether() async throws {
         let realmIds = (0..<3).map { [UInt8](repeating: UInt8($0 + 1), count: 16) }
         let tokens = Dictionary(
             uniqueKeysWithValues: realmIds.map { (hexString($0), "token-\(hexString($0))") })
@@ -369,18 +370,20 @@ final class HardwareRecoveryTests: XCTestCase {
                 unlockKey: unlockKey, realmId: id,
                 scalarShare: scalarShares[index].secret.bytes,
                 encryptedSecret: encryptedSecret)
-            realms.append(RealmFixture(
-                id: id, address: "https://realm\(index + 1).test/",
-                token: tokens[hexString(id)]!, oprfShare: oprfShares[index].secret,
-                scalarShare: scalarShares[index].secret, encryptedSecret: encryptedSecret,
-                secretCommitment: commitment, unlockKeyCommitment: unlockCommitment,
-                unlockKey: unlockKey, numGuesses: 5, guessCount: 0,
-                noiseStaticSecret: index < 2 ? Curve25519.KeyAgreement.PrivateKey() : nil))
+            realms.append(
+                RealmFixture(
+                    id: id, address: "https://realm\(index + 1).test/",
+                    token: tokens[hexString(id)]!, oprfShare: oprfShares[index].secret,
+                    scalarShare: scalarShares[index].secret, encryptedSecret: encryptedSecret,
+                    secretCommitment: commitment, unlockKeyCommitment: unlockCommitment,
+                    unlockKey: unlockKey, numGuesses: 5, guessCount: 0,
+                    noiseStaticSecret: index < 2 ? Curve25519.KeyAgreement.PrivateKey() : nil))
         }
 
         let network = FakeNetwork(realms: realms)
         let jsonRealms = realms.enumerated().map { index, realm -> String in
-            let key = index < 2
+            let key =
+                index < 2
                 ? ",\"public_key\": \"\(hexString(Array(realm.noiseStaticSecret!.publicKey.rawRepresentation)))\""
                 : ""
             return """
@@ -398,10 +401,10 @@ final class HardwareRecoveryTests: XCTestCase {
         let configuration = try JuiceboxConfiguration.parse(Array(json.utf8))
         let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
         let secret = try await recovery.recover(pin: Self.pin, transport: network)
-        XCTAssertEqual(secret, Self.secret)
+        #expect(secret == Self.secret)
     }
 
-    func testWrongPinOnHardwareRealm() async throws {
+    @Test func wrongPinOnHardwareRealm() async throws {
         let realmIds = (0..<2).map { [UInt8](repeating: UInt8($0 + 1), count: 16) }
         let tokens = Dictionary(
             uniqueKeysWithValues: realmIds.map { (hexString($0), "token-\(hexString($0))") })
@@ -423,17 +426,18 @@ final class HardwareRecoveryTests: XCTestCase {
         var realms: [RealmFixture] = []
         for index in 0..<2 {
             let id = realmIds[index]
-            realms.append(RealmFixture(
-                id: id, address: "https://realm\(index + 1).test/",
-                token: tokens[hexString(id)]!, oprfShare: oprfShares[index].secret,
-                scalarShare: scalarShares[index].secret, encryptedSecret: encryptedSecret,
-                secretCommitment: JuiceboxKeys.encryptedUserSecretCommitment(
-                    unlockKey: unlockKey, realmId: id,
-                    scalarShare: scalarShares[index].secret.bytes,
-                    encryptedSecret: encryptedSecret),
-                unlockKeyCommitment: unlockCommitment, unlockKey: unlockKey,
-                numGuesses: 5, guessCount: 1,
-                noiseStaticSecret: Curve25519.KeyAgreement.PrivateKey()))
+            realms.append(
+                RealmFixture(
+                    id: id, address: "https://realm\(index + 1).test/",
+                    token: tokens[hexString(id)]!, oprfShare: oprfShares[index].secret,
+                    scalarShare: scalarShares[index].secret, encryptedSecret: encryptedSecret,
+                    secretCommitment: JuiceboxKeys.encryptedUserSecretCommitment(
+                        unlockKey: unlockKey, realmId: id,
+                        scalarShare: scalarShares[index].secret.bytes,
+                        encryptedSecret: encryptedSecret),
+                    unlockKeyCommitment: unlockCommitment, unlockKey: unlockKey,
+                    numGuesses: 5, guessCount: 1,
+                    noiseStaticSecret: Curve25519.KeyAgreement.PrivateKey()))
         }
         let network = FakeNetwork(realms: realms)
         let json = """
@@ -453,9 +457,9 @@ final class HardwareRecoveryTests: XCTestCase {
         let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
         do {
             _ = try await recovery.recover(pin: Array("00000".utf8), transport: network)
-            XCTFail("wrong PIN must fail")
+            Issue.record("wrong PIN must fail")
         } catch let error as JuiceboxRecoveryError {
-            XCTAssertEqual(error, .invalidPin(guessesRemaining: 4))
+            #expect(error == .invalidPin(guessesRemaining: 4))
         }
     }
 }
