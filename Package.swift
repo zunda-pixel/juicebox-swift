@@ -22,8 +22,8 @@ let package = Package(
   dependencies: [
     .package(url: "https://github.com/brokenhandsio/swift-cbor.git", exact: "0.2.0", traits: []),
     .package(
-      url: "https://github.com/P-H-C/phc-winner-argon2.git",
-      revision: "f57e61e19229e23c4445b85494dbf7c07de721cb"
+      url: "https://github.com/zunda-pixel/argon2-swift.git",
+      from: "0.1.0"
     ),
     .package(url: "https://github.com/trancee/blake-hash.git", exact: "1.1.1"),
     .package(url: "https://github.com/jedisct1/swift-sodium.git", exact: "0.11.0"),
@@ -34,7 +34,7 @@ let package = Package(
       name: "Juicebox",
       dependencies: [
         .product(name: "CBOR", package: "swift-cbor"),
-        .product(name: "argon2", package: "phc-winner-argon2"),
+        .product(name: "Argon2", package: "argon2-swift"),
         .product(name: "BlakeHash", package: "blake-hash"),
         .product(name: "Clibsodium", package: "swift-sodium"),
         .product(name: "Crypto", package: "swift-crypto"),
