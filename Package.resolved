@@ -1,6 +1,15 @@
 {
-  "originHash" : "6e980317c3978ca4a84b4169aef800ed3a0bc5f04538ac8d5506b149d18a6097",
+  "originHash" : "59e8639f52cd02911edc5a856e4f0034091dc52d880e216dfc87117411a55d51",
   "pins" : [
+    {
+      "identity" : "argon2-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/zunda-pixel/argon2-swift.git",
+      "state" : {
+        "revision" : "a555f4786491ea4ddf45cae38cc127f941e1907d",
+        "version" : "0.1.0"
+      }
+    },
     {
       "identity" : "blake-hash",
       "kind" : "remoteSourceControl",
@@ -8,14 +17,6 @@
       "state" : {
         "revision" : "30148ebb247ecf41535a91775ccff153bb9100f9",
         "version" : "1.1.1"
-      }
-    },
-    {
-      "identity" : "phc-winner-argon2",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/P-H-C/phc-winner-argon2.git",
-      "state" : {
-        "revision" : "f57e61e19229e23c4445b85494dbf7c07de721cb"
       }
     },
     {
