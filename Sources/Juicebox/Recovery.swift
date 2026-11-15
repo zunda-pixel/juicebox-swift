@@ -125,9 +125,6 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// long as the caller has not cancelled (then `recover` throws
   /// `CancellationError`). Retrying with the same inputs may succeed.
   case transient
-  /// Not reported by `recover`: a configuration that cannot be used fails
-  /// earlier, in `JuiceboxConfiguration.parse` (`JuiceboxConfigurationError`).
-  case invalidConfiguration
 
   /// The reference client's error ordering, used to pick the most specific
   /// failure when more of a phase's realms fail than it can spare.
@@ -140,7 +137,6 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
     case .rateLimitExceeded: return 4
     case .assertion: return 5
     case .transient: return 6
-    case .invalidConfiguration: return 7
     }
   }
 
