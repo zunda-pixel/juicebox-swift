@@ -450,19 +450,19 @@ struct RecoveryFlowTests {
     }
   }
 
-  /// How a phase fails in `aFailedPhaseIsJudgedByItsOwnAnswers` (the cases
-  /// without an expected error recover instead, in
-  /// `aSingleMismatchedAnswerIsSkipped`). A phase
-  /// fails with the best of its own errors (`bestError` picks the lowest
-  /// rank) when more of its realms fail than can be spared, never with an
-  /// earlier phase's error. In the unlock phase, too few matching answers
-  /// with no more errors than can be spared come from answers whose
-  /// encrypted-secret commitment does not match, and report `assertion`. In
-  /// the version and OPRF phases, when no more realms fail than can be spared
-  /// but too few answers agree to reach the threshold, the phase reports
-  /// `notRegistered` or `assertion` respectively, even if the other realm's
-  /// failure is transient or a rate limit.
-  enum FailingPhase: CaseIterable, Sendable {
+  /// Scenarios for `aFailedPhaseIsJudgedByItsOwnAnswers` (the cases with an
+  /// expected error) and `aSingleMismatchedAnswerIsSkipped` (the two without
+  /// one, which recover). A phase fails with the best of its own errors
+  /// (`bestError` picks the lowest rank) when more of its realms fail than
+  /// can be spared, never with an earlier phase's error. In the unlock
+  /// phase, too few matching answers with no more errors than can be spared
+  /// come from answers whose encrypted-secret commitment does not match, and
+  /// report `assertion`. In the version and OPRF phases, when no more realms
+  /// fail than can be spared but too few answers agree to reach the
+  /// threshold, the phase reports `notRegistered` or `assertion`
+  /// respectively, even if the other realm's failure is transient or a rate
+  /// limit.
+  enum PhaseScenario: CaseIterable, Sendable {
     /// The first realm reports no guesses left in the version phase (an
     /// error that ranks ahead), and the second realm's OPRF request fails
     /// with a server error.
@@ -561,12 +561,12 @@ struct RecoveryFlowTests {
 
   private actor PhaseFailureTransport: JuiceboxHTTPTransport {
     let network: FakeNetwork
-    let failingPhase: FailingPhase
+    let failingPhase: PhaseScenario
     /// The answers made up or rewritten instead of passed on as they are, so
     /// the test can tell that recovery got as far as the scenario.
     private(set) var injectedAnswers = 0
 
-    init(network: FakeNetwork, failingPhase: FailingPhase) {
+    init(network: FakeNetwork, failingPhase: PhaseScenario) {
       self.network = network
       self.failingPhase = failingPhase
     }
@@ -737,10 +737,10 @@ struct RecoveryFlowTests {
   }
 
   /// A phase that fails is judged by its own realms' answers, never by
-  /// an earlier phase's error, even one that ranks ahead. See `FailingPhase`
+  /// an earlier phase's error, even one that ranks ahead. See `PhaseScenario`
   /// for the unlock phase's rule and each case.
-  @Test(arguments: FailingPhase.allCases.filter { $0.expectedError != nil })
-  func aFailedPhaseIsJudgedByItsOwnAnswers(failingPhase: FailingPhase) async throws {
+  @Test(arguments: PhaseScenario.allCases.filter { $0.expectedError != nil })
+  func aFailedPhaseIsJudgedByItsOwnAnswers(failingPhase: PhaseScenario) async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
     let transport = PhaseFailureTransport(network: network, failingPhase: failingPhase)
@@ -751,12 +751,14 @@ struct RecoveryFlowTests {
     #expect(await transport.injectedAnswers == failingPhase.injectedAnswers)
   }
 
-  /// One answer that does not agree is skipped without an error, so the
-  /// other realms still recover the secret when enough of them agree, as in
-  /// the reference client (it continues "as there may still be enough
-  /// material from other realms").
-  @Test(arguments: FailingPhase.allCases.filter { $0.expectedError == nil })
-  func aSingleMismatchedAnswerIsSkipped(failingPhase: FailingPhase) async throws {
+  /// With one answer that does not agree, recovery still succeeds when the
+  /// other answers reach the threshold. That the unlock phase counts no error
+  /// for a mismatch is checked by `.unlockWithAnErrorAndAMismatch`. In the
+  /// unlock phase, the reference client continues past a mismatch "as there
+  /// may still be enough material from other realms"; in the OPRF phase it
+  /// groups the answers and keeps the group that reaches the threshold.
+  @Test(arguments: PhaseScenario.allCases.filter { $0.expectedError == nil })
+  func aSingleMismatchedAnswerIsSkipped(failingPhase: PhaseScenario) async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
     let transport = PhaseFailureTransport(network: network, failingPhase: failingPhase)

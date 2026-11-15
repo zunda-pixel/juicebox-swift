@@ -95,7 +95,7 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// other realms may still have guesses.
   case invalidPin(guessesRemaining: Int?)
   /// The secret is not registered, or not fully registered, with the realms,
-  /// or the realms that answered disagree on the registration version, so
+  /// or enough realms answered but disagree on the registration version, so
   /// that no version has answers from enough of them (see
   /// ``JuiceboxRecoveryError`` for when a retry may help).
   case notRegistered
