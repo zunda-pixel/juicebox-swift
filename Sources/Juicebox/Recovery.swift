@@ -167,6 +167,10 @@ public struct JuiceboxRecovery: Sendable {
       mode: configuration.pinHashingMode)
     let (blindingFactor, blindedInput) = OPRF.start(input: accessKey)
 
+    // A phase that falls short reports its own realms' errors, as the
+    // reference client does; an earlier phase's error (a realm that did not
+    // take part) must not stand for this phase's failure.
+    errors.removeAll()
     var pointShares:
       [(
         share: SecretShare<RistrettoPoint>, commitment: [UInt8],
@@ -242,6 +246,7 @@ public struct JuiceboxRecovery: Sendable {
 
     // Phase 3: exchange the unlock key tag for each realm's scalar share,
     // then decrypt the user secret.
+    errors.removeAll()
     var scalarShares: [(share: SecretShare<RistrettoScalar>, encryptedSecret: [UInt8])] = []
     let phase3 = try await requestEach(realms, transport: transport) { realm in
       .recover3(

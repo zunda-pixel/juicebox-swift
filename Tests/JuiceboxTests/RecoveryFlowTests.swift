@@ -450,6 +450,56 @@ struct RecoveryFlowTests {
     }
   }
 
+  /// Makes one phase fall short with server errors (`transient`) after an
+  /// earlier phase got a lower-ranked error from a realm.
+  /// - `failingPhase == 2`: the first realm reports no guesses left in the
+  ///   version phase, and the second realm's OPRF request fails.
+  /// - `failingPhase == 3`: the third realm's OPRF request is rate limited,
+  ///   and the second and third realms' unlock requests fail.
+  private struct EarlierPhaseFailureTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    let failingPhase: Int
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      let value = try decodeCBOR(request.body)
+      let isRealm1 = request.url.hasPrefix("https://realm1.")
+      let isRealm2 = request.url.hasPrefix("https://realm2.")
+      let isRealm3 = request.url.hasPrefix("https://realm3.")
+      switch failingPhase {
+      case 2:
+        if isRealm1, value == .textString("Recover1") {
+          return JuiceboxHTTPResponse(
+            statusCode: 200, body: CBOR.map(["Recover1": .textString("NoGuesses")]).encode())
+        }
+        if isRealm2, value["Recover2"] != nil {
+          return JuiceboxHTTPResponse(statusCode: 503, body: [])
+        }
+      default:
+        if isRealm3, value["Recover2"] != nil {
+          return JuiceboxHTTPResponse(statusCode: 429, body: [])
+        }
+        if isRealm2 || isRealm3, value["Recover3"] != nil {
+          return JuiceboxHTTPResponse(statusCode: 503, body: [])
+        }
+      }
+      return try await network.send(request)
+    }
+  }
+
+  /// When a phase falls short, recovery reports that phase's failure (a
+  /// server error), not a lower-ranked error that a realm gave in an earlier
+  /// phase ("no guesses" in the version phase, a rate limit in the OPRF
+  /// phase).
+  @Test(arguments: [2, 3])
+  func aFailedPhaseReportsItsOwnError(failingPhase: Int) async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = EarlierPhaseFailureTransport(network: network, failingPhase: failingPhase)
+    await #expect(throws: JuiceboxRecoveryError.transient) {
+      try await recovery.recover(pin: Self.pin, transport: transport)
+    }
+  }
+
   /// Answers each phase's requests in the reverse of the realms' order: the
   /// last realm answers first and the first realm answers last. Each request
   /// waits for its turn (for up to five seconds) and records the realm it
