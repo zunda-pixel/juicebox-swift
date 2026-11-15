@@ -466,11 +466,12 @@ public struct JuiceboxRecovery: Sendable {
     let response: JuiceboxHTTPResponse
     do {
       response = try await transport.send(request)
-    } catch is CancellationError {
-      throw CancellationError()
-    } catch let error as URLError where error.code == .cancelled {
-      throw CancellationError()
     } catch {
+      // Recovery stops only when the caller cancelled it. A transport may
+      // also report a cancellation for its own reasons (an invalidated
+      // session, a cancelled redirect); that is a failure of this realm, so
+      // the other realms can still answer, and the caller does not mistake a
+      // real failure for its own cancellation.
       try Task.checkCancellation()
       throw JuiceboxRecoveryError.transient
     }

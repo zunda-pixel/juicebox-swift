@@ -214,11 +214,17 @@ struct RecoveryFlowTests {
 
   private actor CancellingTransport: JuiceboxHTTPTransport {
     enum Mode: CaseIterable {
+      /// Every PIN request throws `CancellationError` without the caller
+      /// having cancelled.
       case throwsCancellation
+      /// Every PIN request throws `URLError(.cancelled)` without the caller
+      /// having cancelled.
       case throwsURLCancellation
+      /// Every PIN request cancels the task that sends it, as a cancelled
+      /// caller does, and then answers.
       case returnsAfterCancellation
       /// Only the first realm's PIN requests throw `CancellationError`; the
-      /// other realms answer, so the phase would have enough answers.
+      /// other realms answer.
       case cancelsOneRealm
     }
 
@@ -289,60 +295,81 @@ struct RecoveryFlowTests {
     }
   #endif
 
-  /// A cancellation during the PIN phase stops recovery before the unlock
-  /// phase. The PIN requests of a phase go to every realm together, so every
-  /// realm has been asked once. When only one realm is cancelled and the
-  /// others answer, the phase has enough answers, and recovery still stops.
-  @Test func cancellationStopsBeforeTheNextPhase() async throws {
+  /// When the task sending a PIN request is cancelled, as a cancelled caller
+  /// cancels it, recovery stops before the unlock phase. The PIN requests of
+  /// a phase go to every realm together, so every realm has been asked once.
+  @Test func aCancelledRequestStopsRecoveryBeforeTheNextPhase() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-    for mode in CancellingTransport.Mode.allCases {
-      let transport = CancellingTransport(network: network, mode: mode)
-      let task = Task { [pin = Self.pin] in
-        try await recovery.recover(pin: pin, transport: transport)
-      }
-      do {
-        _ = try await task.value
-        Issue.record("expected cancellation")
-      } catch is CancellationError {
-        #expect(await transport.pinRequests == Self.realmCount)
-        #expect(await transport.unlockRequests == 0)
-      }
+    let transport = CancellingTransport(network: network, mode: .returnsAfterCancellation)
+    await #expect(throws: CancellationError.self) {
+      try await recovery.recover(pin: Self.pin, transport: transport)
     }
+    #expect(await transport.pinRequests == Self.realmCount)
+    #expect(await transport.unlockRequests == 0)
+  }
+
+  /// A cancellation the transport reports while the caller has not cancelled
+  /// (an invalidated session, a cancelled redirect) is a failure of that
+  /// realm, not the caller's cancellation: recovery fails with a recovery
+  /// error, and the other realms can still answer.
+  @Test func aTransportCancellationIsARealmFailure() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    for mode in [CancellingTransport.Mode.throwsCancellation, .throwsURLCancellation] {
+      let transport = CancellingTransport(network: network, mode: mode)
+      await #expect(throws: JuiceboxRecoveryError.transient) {
+        try await recovery.recover(pin: Self.pin, transport: transport)
+      }
+      #expect(await transport.unlockRequests == 0)
+    }
+    let oneRealm = CancellingTransport(network: network, mode: .cancelsOneRealm)
+    let secret = try await recovery.recover(pin: Self.pin, transport: oneRealm)
+    #expect(secret == Self.userSecret)
   }
 
   /// Answers each phase's requests in the reverse of the realms' order: the
-  /// first realm answers last. Recovery must still pair every answer with its
-  /// realm.
+  /// last realm answers first and the first realm answers last. Each request
+  /// waits for its turn (for up to five seconds) and records the realm it
+  /// answered for. Recovery must still pair every answer with its realm.
   private actor ReversingTransport: JuiceboxHTTPTransport {
     let network: FakeNetwork
+    private(set) var answered: [Int] = []
 
     init(network: FakeNetwork) {
       self.network = network
     }
 
     func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      let realmCount = RecoveryFlowTests.realmCount
       let realmNumber = request.url.first(where: \.isNumber).flatMap { Int(String($0)) } ?? 0
-      try await Task.sleep(
-        for: .milliseconds(20 * (RecoveryFlowTests.realmCount - realmNumber + 1)))
+      let deadline = ContinuousClock.now + .seconds(5)
+      while answered.count % realmCount != realmCount - realmNumber, ContinuousClock.now < deadline
+      {
+        try await Task.sleep(for: .milliseconds(1))
+      }
+      answered.append(realmNumber)
       return try await network.send(request)
     }
   }
 
-  @Test func answersInReverseOrderArePairedWithTheirRealms() async throws {
+  @Test(.timeLimit(.minutes(1)))
+  func answersInReverseOrderArePairedWithTheirRealms() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-    let secret = try await recovery.recover(
-      pin: Self.pin, transport: ReversingTransport(network: network))
+    let transport = ReversingTransport(network: network)
+    let secret = try await recovery.recover(pin: Self.pin, transport: transport)
     #expect(secret == Self.userSecret)
+    // Three phases, each answered from the last realm to the first.
+    #expect(await transport.answered == [3, 2, 1, 3, 2, 1, 3, 2, 1])
   }
 
-  /// Holds each request for up to a second until the other realms of its
+  /// Holds each request for up to five seconds until the other realms of its
   /// phase have been asked too, and records how many were in flight at once.
   /// Every phase here asks all realms, so the requests arrive in batches of
   /// `realmCount`. When the realms are contacted one at a time, all but the
-  /// last request of each batch wait out the second alone, so the test fails
-  /// (in about six seconds) instead of hanging.
+  /// last request of each batch wait out the five seconds alone, so the test
+  /// fails (in about 30 seconds) instead of hanging.
   private actor GatheringTransport: JuiceboxHTTPTransport {
     let network: FakeNetwork
     private var arrivals = 0
@@ -360,7 +387,7 @@ struct RecoveryFlowTests {
       inFlight += 1
       defer { inFlight -= 1 }
       mostInFlight = max(mostInFlight, inFlight)
-      let deadline = ContinuousClock.now + .seconds(1)
+      let deadline = ContinuousClock.now + .seconds(5)
       while arrivals < batchEnd, ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
       }
@@ -368,7 +395,8 @@ struct RecoveryFlowTests {
     }
   }
 
-  @Test func realmsAreContactedTogether() async throws {
+  @Test(.timeLimit(.minutes(1)))
+  func realmsAreContactedTogether() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
     let transport = GatheringTransport(network: network)
@@ -418,7 +446,12 @@ struct RecoveryFlowTests {
     while await transport.pinRequests == 0 {
       guard ContinuousClock.now < deadline else {
         task.cancel()
-        Issue.record("no PIN request was sent")
+        do {
+          _ = try await task.value
+          Issue.record("no PIN request was sent, and recovery succeeded")
+        } catch {
+          Issue.record("no PIN request was sent: \(error)")
+        }
         return
       }
       try await Task.sleep(for: .milliseconds(5))
