@@ -450,16 +450,16 @@ struct RecoveryFlowTests {
     }
   }
 
-  /// How a phase falls short in `aFailedPhaseIsJudgedByItsOwnAnswers`. A phase
+  /// How a phase fails in `aFailedPhaseIsJudgedByItsOwnAnswers`. A phase
   /// fails with the best of its own errors (`bestError` picks the lowest
   /// rank) when more of its realms fail than can be spared, never with an
-  /// earlier phase's error. In the unlock phase, a shortfall with no more
-  /// errors than can be spared comes from answers whose encrypted-secret
-  /// commitment does not match, and reports `assertion`. In the version and
-  /// OPRF phases, when no more realms fail than can be spared but too few
-  /// answers agree to reach the threshold, the phase reports `notRegistered`
-  /// or `assertion` respectively, even if the other realm's failure is
-  /// transient or a rate limit.
+  /// earlier phase's error. In the unlock phase, too few matching answers
+  /// with no more errors than can be spared come from answers whose
+  /// encrypted-secret commitment does not match, and report `assertion`. In
+  /// the version and OPRF phases, when no more realms fail than can be spared
+  /// but too few answers agree to reach the threshold, the phase reports
+  /// `notRegistered` or `assertion` respectively, even if the other realm's
+  /// failure is transient or a rate limit.
   enum FailingPhase: CaseIterable, Sendable {
     /// The first realm reports no guesses left in the version phase (an
     /// error that ranks ahead), and the second realm's OPRF request fails
@@ -467,7 +467,9 @@ struct RecoveryFlowTests {
     case oprf
     /// The third realm's OPRF request is rate limited (an error that ranks
     /// ahead), and the second and third realms' unlock requests fail with a
-    /// server error.
+    /// server error. The unlock phase also asks a realm that failed in the
+    /// OPRF phase (zunda-pixel/juicebox-swift#4), so three answers are made
+    /// up.
     case unlock
     /// In the unlock phase, the first and third realms fail with a server
     /// error and the second reports a bad unlock key tag with 3 guesses left:
@@ -486,8 +488,8 @@ struct RecoveryFlowTests {
     case unlockWithoutErrors
     /// In the unlock phase, the first realm reports a bad unlock key tag, the
     /// second answers with a wrong commitment, and the third answers
-    /// correctly: one error can be spared, so the shortfall comes from the
-    /// mismatch.
+    /// correctly: one error can be spared, so too few answers match because
+    /// of the mismatch.
     case unlockWithAnErrorAndAMismatch
     /// The same with a server error instead of the bad tag: one error can be
     /// spared, so the result is `assertion`, not `transient` (it used to be
@@ -717,7 +719,7 @@ struct RecoveryFlowTests {
     }
   }
 
-  /// A phase that falls short is judged by its own realms' answers, never by
+  /// A phase that fails is judged by its own realms' answers, never by
   /// an earlier phase's error, even one that ranks ahead. See `FailingPhase`
   /// for the unlock phase's rule and each case.
   @Test(arguments: FailingPhase.allCases)

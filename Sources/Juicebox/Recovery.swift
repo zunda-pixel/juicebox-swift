@@ -53,18 +53,20 @@ public protocol JuiceboxHTTPTransport: Sendable {
 /// Each phase asks some realms (the first phase all of them, the later ones
 /// those with the chosen registration version) and needs answers from at
 /// least the recover threshold of them; the rest can be spared. When more of
-/// a phase's realms fail than it can spare (the phase falls short), `recover`
-/// reports the best of that phase's errors, in this order: `invalidPin` (between two, the fewer
-/// guesses left), `notRegistered`, `invalidAuth`, `upgradeRequired`,
-/// `rateLimitExceeded`, `assertion`, `transient`. Other failures report the
-/// case that fits them, such as `invalidPin` for a wrong PIN,
-/// `notRegistered` or `assertion` for answers that do not agree, or
-/// `assertion` for a secret that does not decrypt.
+/// a phase's realms fail than it can spare (the phase falls short),
+/// `recover` reports the best of that phase's errors, in this order:
+/// `invalidPin` (between two, the fewer guesses left), `notRegistered`,
+/// `invalidAuth`, `upgradeRequired`, `rateLimitExceeded`, `assertion`,
+/// `transient`. Other failures report the case that fits them, such as
+/// `invalidPin` for a wrong PIN, `notRegistered` or `assertion` for answers
+/// that do not agree, or `assertion` for a secret that does not decrypt.
 ///
 /// So the reported case need not be the only reason recovery failed: another
 /// realm may have failed transiently or been rate limited, and a retry with
-/// the same inputs may then succeed, whichever case was reported. `recover`
-/// itself does not retry a realm (zunda-pixel/juicebox-swift#7).
+/// the same inputs may then succeed, whichever case was reported. After a
+/// wrong PIN, though, the usual source of `invalidPin`, a retry with the same
+/// PIN uses up another guess (see `invalidPin`). `recover` itself does not
+/// retry a realm (zunda-pixel/juicebox-swift#7).
 ///
 /// The descriptions are based on the reference client's `RecoverError`,
 /// with the differences noted under each case. Unlike the reference client,
@@ -235,8 +237,8 @@ public struct JuiceboxRecovery: Sendable {
     let (blindingFactor, blindedInput) = OPRF.start(input: accessKey)
 
     // Each phase keeps its own errors, as the reference client joins each
-    // phase anew: a phase that falls short reports its own realms' errors,
-    // not an earlier phase's.
+    // phase anew: a phase that fails reports its own realms' errors, not an
+    // earlier phase's.
     var oprfErrors: [JuiceboxRecoveryError] = []
     var pointShares:
       [(
@@ -356,8 +358,8 @@ public struct JuiceboxRecovery: Sendable {
     // As in the reference client (`join_at_least_threshold`): more errors than
     // the phase's realms can spare fail the phase with the best of them (of
     // all of them, since every answer is awaited; see `requestEach`).
-    // Otherwise enough realms answered, and a shortfall can only come from
-    // answers whose encrypted-secret commitment did not match (an
+    // Otherwise enough realms answered, and too few matching answers can only
+    // come from answers whose encrypted-secret commitment did not match (an
     // inconsistency on the realms' side), which the reference client reports
     // as an assertion.
     guard unlockErrors.count <= realms.count - threshold else { throw bestError(unlockErrors) }
