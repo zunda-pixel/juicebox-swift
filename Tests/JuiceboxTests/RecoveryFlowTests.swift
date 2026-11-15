@@ -458,7 +458,8 @@ struct RecoveryFlowTests {
   /// commitment does not match, and reports `assertion`. In the version and
   /// OPRF phases, when no more realms fail than can be spared but too few
   /// answers agree to reach the threshold, the phase reports `notRegistered`
-  /// and `assertion`, even if the failure is transient.
+  /// or `assertion` respectively, even if the other realm's failure is
+  /// transient or a rate limit.
   enum FailingPhase: CaseIterable, Sendable {
     /// The first realm reports no guesses left in the version phase (an
     /// error that ranks ahead), and the second realm's OPRF request fails
