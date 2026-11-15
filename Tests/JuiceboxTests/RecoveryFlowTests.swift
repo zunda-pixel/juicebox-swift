@@ -466,13 +466,13 @@ struct RecoveryFlowTests {
     /// The first realm reports no guesses left in the version phase (an
     /// error that ranks ahead), and the second realm's OPRF request fails
     /// with a server error.
-    case oprf
+    case oprfAfterAVersionError
     /// The third realm's OPRF request is rate limited (an error that ranks
     /// ahead), and the second and third realms' unlock requests fail with a
     /// server error. The unlock phase also asks a realm that failed in the
     /// OPRF phase (zunda-pixel/juicebox-swift#4), so three answers are made
     /// up.
-    case unlock
+    case unlockAfterAnOprfRateLimit
     /// In the unlock phase, the first and third realms fail with a server
     /// error and the second reports a bad unlock key tag with 3 guesses left:
     /// the best of the phase's own errors, which is neither the first nor the
@@ -494,8 +494,9 @@ struct RecoveryFlowTests {
     /// of the mismatch.
     case unlockWithAnErrorAndAMismatch
     /// The same with a server error instead of the bad tag: one error can be
-    /// spared, so the result is `assertion`, not `transient` (it used to be
-    /// `transient`; this package does not retry, zunda-pixel/juicebox-swift#7).
+    /// spared, so the result is `assertion`, not `transient` (the reference
+    /// client reports `Assertion` only after its retries of the 503 fail;
+    /// this package does not retry, zunda-pixel/juicebox-swift#7).
     case unlockWithAServerErrorAndAMismatch
     /// In the version phase, the first realm fails with a server error and
     /// the second reports another registration version: one error can be
@@ -528,16 +529,16 @@ struct RecoveryFlowTests {
     /// succeeds (no error is expected).
     case oprfWithOnlyAMismatch
 
-    /// The answers `PhaseFailureTransport` makes up or rewrites when recovery
+    /// The answers `ScenarioTransport` makes up or rewrites when recovery
     /// gets as far as the scenario.
     var injectedAnswers: Int {
       switch self {
-      case .oprf, .unlockAfterAVersionError, .unlockWithAnErrorAndAMismatch,
+      case .oprfAfterAVersionError, .unlockAfterAVersionError, .unlockWithAnErrorAndAMismatch,
         .unlockWithAServerErrorAndAMismatch, .versionWithAServerErrorAndAMismatch,
         .oprfWithAServerErrorAndAMismatch, .oprfWithARateLimitAndAMismatch,
         .versionWithNoGuessesAndAServerError, .unlockWithTwoBadUnlockKeyTags:
         2
-      case .unlock, .unlockWithThreeErrors, .unlockWithoutErrors: 3
+      case .unlockAfterAnOprfRateLimit, .unlockWithThreeErrors, .unlockWithoutErrors: 3
       case .unlockWithOnlyAMismatch, .oprfWithOnlyAMismatch: 1
       }
     }
@@ -545,7 +546,7 @@ struct RecoveryFlowTests {
     /// The error recovery reports, or nil when it recovers the secret.
     var expectedError: JuiceboxRecoveryError? {
       switch self {
-      case .oprf, .unlock: .transient
+      case .oprfAfterAVersionError, .unlockAfterAnOprfRateLimit: .transient
       case .unlockWithThreeErrors, .unlockAfterAVersionError: .invalidPin(guessesRemaining: 3)
       case .unlockWithoutErrors, .unlockWithAnErrorAndAMismatch,
         .unlockWithAServerErrorAndAMismatch, .oprfWithAServerErrorAndAMismatch,
@@ -559,16 +560,16 @@ struct RecoveryFlowTests {
     }
   }
 
-  private actor PhaseFailureTransport: JuiceboxHTTPTransport {
+  private actor ScenarioTransport: JuiceboxHTTPTransport {
     let network: FakeNetwork
-    let failingPhase: PhaseScenario
+    let scenario: PhaseScenario
     /// The answers made up or rewritten instead of passed on as they are, so
     /// the test can tell that recovery got as far as the scenario.
     private(set) var injectedAnswers = 0
 
-    init(network: FakeNetwork, failingPhase: PhaseScenario) {
+    init(network: FakeNetwork, scenario: PhaseScenario) {
       self.network = network
-      self.failingPhase = failingPhase
+      self.scenario = scenario
     }
 
     func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
@@ -589,11 +590,11 @@ struct RecoveryFlowTests {
       let isRealm1 = request.url.hasPrefix("https://realm1.")
       let isRealm2 = request.url.hasPrefix("https://realm2.")
       let isRealm3 = request.url.hasPrefix("https://realm3.")
-      switch failingPhase {
-      case .oprf:
+      switch scenario {
+      case .oprfAfterAVersionError:
         if isRealm1, isRecover1 { return try Self.noGuesses() }
         if isRealm2, isRecover2 { return Self.serverError }
-      case .unlock:
+      case .unlockAfterAnOprfRateLimit:
         if isRealm3, isRecover2 { return JuiceboxHTTPResponse(statusCode: 429, body: []) }
         if isRealm2 || isRealm3, isRecover3 { return Self.serverError }
       case .unlockWithThreeErrors:
@@ -740,15 +741,15 @@ struct RecoveryFlowTests {
   /// an earlier phase's error, even one that ranks ahead. See `PhaseScenario`
   /// for the unlock phase's rule and each case.
   @Test(arguments: PhaseScenario.allCases.filter { $0.expectedError != nil })
-  func aFailedPhaseIsJudgedByItsOwnAnswers(failingPhase: PhaseScenario) async throws {
+  func aFailedPhaseIsJudgedByItsOwnAnswers(scenario: PhaseScenario) async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-    let transport = PhaseFailureTransport(network: network, failingPhase: failingPhase)
-    let expected = try #require(failingPhase.expectedError)
+    let transport = ScenarioTransport(network: network, scenario: scenario)
+    let expected = try #require(scenario.expectedError)
     await #expect(throws: expected) {
       try await recovery.recover(pin: Self.pin, transport: transport)
     }
-    #expect(await transport.injectedAnswers == failingPhase.injectedAnswers)
+    #expect(await transport.injectedAnswers == scenario.injectedAnswers)
   }
 
   /// With one answer that does not agree, recovery still succeeds when the
@@ -758,13 +759,13 @@ struct RecoveryFlowTests {
   /// may still be enough material from other realms"; in the OPRF phase it
   /// groups the answers and keeps the group that reaches the threshold.
   @Test(arguments: PhaseScenario.allCases.filter { $0.expectedError == nil })
-  func aSingleMismatchedAnswerIsSkipped(failingPhase: PhaseScenario) async throws {
+  func aSingleMismatchedAnswerIsSkipped(scenario: PhaseScenario) async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-    let transport = PhaseFailureTransport(network: network, failingPhase: failingPhase)
+    let transport = ScenarioTransport(network: network, scenario: scenario)
     let secret = try await recovery.recover(pin: Self.pin, transport: transport)
     #expect(secret == Self.userSecret)
-    #expect(await transport.injectedAnswers == failingPhase.injectedAnswers)
+    #expect(await transport.injectedAnswers == scenario.injectedAnswers)
   }
 
   /// Answers each phase's requests in the reverse of the realms' order: the

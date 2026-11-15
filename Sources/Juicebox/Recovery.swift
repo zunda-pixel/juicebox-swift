@@ -124,8 +124,9 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// missing-session or session error (zunda-pixel/juicebox-swift#8; the
   /// reference client, juicebox-sdk, reports these two as an assertion on a
   /// new session, which `recover` always opens), any error the transport
-  /// throws, and the answer to a request whose own task was cancelled while
-  /// the caller's was not. Retrying with the same inputs may succeed.
+  /// throws, and the answer to a request whose own task was cancelled, as
+  /// long as the caller has not cancelled (then `recover` throws
+  /// `CancellationError`). Retrying with the same inputs may succeed.
   case transient
   /// Not reported by `recover`: a configuration that cannot be used fails
   /// earlier, in `JuiceboxConfiguration.parse` (`JuiceboxConfigurationError`).
