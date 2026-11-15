@@ -151,6 +151,10 @@ struct RecoveryFlowTests {
 
   // MARK: Setup
 
+  /// Without `pinHash`, the setup hashes `pin` with `version`, `mode`, and
+  /// an empty `userInfo`, so the test must give `JuiceboxRecovery` no
+  /// `userInfo`.
+  ///
   /// - Parameter pinHash: The PIN's hash, when it is already known, so the
   ///   setup does not hash the PIN itself (Standard2019 takes seconds).
   ///   `pin` is then unused. The hash must be of the PIN that the test
