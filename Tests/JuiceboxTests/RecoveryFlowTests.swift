@@ -38,7 +38,7 @@ struct RecoveryFlowTests {
     var guessCount: UInt16
   }
 
-  final class FakeNetwork: JuiceboxHTTPTransport, @unchecked Sendable {
+  final class FakeNetwork: JuiceboxHTTPTransport, Sendable {
     let realms: [String: FakeRealm]
     init(realms: [FakeRealm]) {
       self.realms = Dictionary(uniqueKeysWithValues: realms.map { ($0.url, $0) })
@@ -153,6 +153,9 @@ struct RecoveryFlowTests {
 
   /// - Parameter pinHash: The PIN's hash, when it is already known, so the
   ///   setup does not hash the PIN itself (Standard2019 takes seconds).
+  ///   `pin` is then unused. The hash must be of the PIN that the test
+  ///   recovers with, `version`, `mode`, and the `userInfo` the test gives
+  ///   `JuiceboxRecovery`.
   func makeNetwork(
     pin: [UInt8] = RecoveryFlowTests.pin, mode: JuiceboxPinHashingMode = .fastInsecure,
     pinHash: (accessKey: [UInt8], encryptionKeySeed: [UInt8])? = nil
@@ -328,9 +331,13 @@ struct RecoveryFlowTests {
       ))
     let recovery = JuiceboxRecovery(
       configuration: configuration, tokens: tokens, userInfo: PinHashVector.userInfo)
+    // Measure from before the ticker first runs, so a stall before its
+    // first tick (when `recover` hashes before giving up the main actor)
+    // also counts.
+    let started = ContinuousClock.now
     let ticker = Task { @MainActor in
       var longestGap = Duration.zero
-      var last = ContinuousClock.now
+      var last = started
       while !Task.isCancelled {
         try? await Task.sleep(for: .milliseconds(10))
         let now = ContinuousClock.now
@@ -342,7 +349,6 @@ struct RecoveryFlowTests {
     // Stop the ticker even when `recover` throws, so it does not keep
     // waking the main actor during the other tests.
     defer { ticker.cancel() }
-    let started = ContinuousClock.now
     let secret = try await recovery.recover(pin: Self.pin, transport: network)
     let elapsed = ContinuousClock.now - started
     ticker.cancel()
