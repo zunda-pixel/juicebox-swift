@@ -486,6 +486,15 @@ struct RecoveryFlowTests {
     /// mismatch.
     case unlockWithAnErrorAndAMismatch
 
+    /// The answers `PhaseFailureTransport` makes up when recovery gets as far
+    /// as the scenario.
+    var injectedAnswers: Int {
+      switch self {
+      case .oprf, .unlockAfterAVersionError, .unlockWithAnErrorAndAMismatch: 2
+      case .unlock, .unlockWithThreeErrors, .unlockWithoutErrors: 3
+      }
+    }
+
     var expectedError: JuiceboxRecoveryError {
       switch self {
       case .oprf, .unlock: .transient
@@ -495,11 +504,27 @@ struct RecoveryFlowTests {
     }
   }
 
-  private struct PhaseFailureTransport: JuiceboxHTTPTransport {
+  private actor PhaseFailureTransport: JuiceboxHTTPTransport {
     let network: FakeNetwork
     let failingPhase: FailingPhase
+    /// The answers made up instead of passing the request on, so the test
+    /// can tell that recovery got as far as the scenario.
+    private(set) var injectedAnswers = 0
+
+    init(network: FakeNetwork, failingPhase: FailingPhase) {
+      self.network = network
+      self.failingPhase = failingPhase
+    }
 
     func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      if let answer = try injectedAnswer(for: request) {
+        injectedAnswers += 1
+        return answer
+      }
+      return try await network.send(request)
+    }
+
+    private func injectedAnswer(for request: JuiceboxHTTPRequest) throws -> JuiceboxHTTPResponse? {
       let value = try decodeCBOR(request.body)
       let isRecover1 = value == .textString("Recover1")
       let isRecover2 = value["Recover2"] != nil
@@ -527,7 +552,7 @@ struct RecoveryFlowTests {
         if isRealm1, isRecover3 { return try Self.badUnlockKeyTag() }
         if isRealm2, isRecover3 { return try mismatchedCommitment(for: request) }
       }
-      return try await network.send(request)
+      return nil
     }
 
     static let serverError = JuiceboxHTTPResponse(statusCode: 503, body: [])
@@ -594,6 +619,7 @@ struct RecoveryFlowTests {
     await #expect(throws: failingPhase.expectedError) {
       try await recovery.recover(pin: Self.pin, transport: transport)
     }
+    #expect(await transport.injectedAnswers == failingPhase.injectedAnswers)
   }
 
   /// Answers each phase's requests in the reverse of the realms' order: the
