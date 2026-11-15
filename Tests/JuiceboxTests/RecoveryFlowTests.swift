@@ -506,6 +506,15 @@ struct RecoveryFlowTests {
     /// report the better one, `rateLimitExceeded`, so `assertion` shows that
     /// the answer verified and was set apart by its commitment.
     case oprfWithARateLimitAndAMismatch
+    /// In the version phase, the first realm reports no guesses left and the
+    /// second fails with a server error: the phase falls short, and the best
+    /// of its errors is `invalidPin(guessesRemaining: 0)`, although the
+    /// realms that did not fail may still have guesses.
+    case versionWithNoGuessesAndAServerError
+    /// In the unlock phase, the first realm reports a bad unlock key tag with
+    /// 3 guesses left and the second with 2: between two `invalidPin`s, the
+    /// fewer guesses left ranks ahead.
+    case unlockWithTwoBadUnlockKeyTags
 
     /// The answers `PhaseFailureTransport` makes up when recovery gets as far
     /// as the scenario.
@@ -513,7 +522,8 @@ struct RecoveryFlowTests {
       switch self {
       case .oprf, .unlockAfterAVersionError, .unlockWithAnErrorAndAMismatch,
         .unlockWithAServerErrorAndAMismatch, .versionWithAServerErrorAndAMismatch,
-        .oprfWithAServerErrorAndAMismatch, .oprfWithARateLimitAndAMismatch:
+        .oprfWithAServerErrorAndAMismatch, .oprfWithARateLimitAndAMismatch,
+        .versionWithNoGuessesAndAServerError, .unlockWithTwoBadUnlockKeyTags:
         2
       case .unlock, .unlockWithThreeErrors, .unlockWithoutErrors: 3
       }
@@ -528,6 +538,8 @@ struct RecoveryFlowTests {
         .oprfWithARateLimitAndAMismatch:
         .assertion
       case .versionWithAServerErrorAndAMismatch: .notRegistered
+      case .versionWithNoGuessesAndAServerError: .invalidPin(guessesRemaining: 0)
+      case .unlockWithTwoBadUnlockKeyTags: .invalidPin(guessesRemaining: 2)
       }
     }
   }
@@ -535,8 +547,8 @@ struct RecoveryFlowTests {
   private actor PhaseFailureTransport: JuiceboxHTTPTransport {
     let network: FakeNetwork
     let failingPhase: FailingPhase
-    /// The answers made up instead of passing the request on, so the test
-    /// can tell that recovery got as far as the scenario.
+    /// The answers made up or rewritten instead of passed on as they are, so
+    /// the test can tell that recovery got as far as the scenario.
     private(set) var injectedAnswers = 0
 
     init(network: FakeNetwork, failingPhase: FailingPhase) {
@@ -593,6 +605,12 @@ struct RecoveryFlowTests {
       case .oprfWithARateLimitAndAMismatch:
         if isRealm1, isRecover2 { return JuiceboxHTTPResponse(statusCode: 429, body: []) }
         if isRealm2, isRecover2 { return try await mismatchedUnlockKeyCommitment(for: request) }
+      case .versionWithNoGuessesAndAServerError:
+        if isRealm1, isRecover1 { return try Self.noGuesses() }
+        if isRealm2, isRecover1 { return Self.serverError }
+      case .unlockWithTwoBadUnlockKeyTags:
+        if isRealm1, isRecover3 { return try Self.badUnlockKeyTag() }
+        if isRealm2, isRecover3 { return try Self.badUnlockKeyTag(guessesRemaining: 2) }
       }
       return nil
     }
@@ -612,12 +630,14 @@ struct RecoveryFlowTests {
         decodingAs: .recover1(.ok(version: version)))
     }
 
-    static func badUnlockKeyTag() throws -> JuiceboxHTTPResponse {
+    static func badUnlockKeyTag(guessesRemaining: UInt16 = 3) throws -> JuiceboxHTTPResponse {
       try answer(
         CBOR.map([
-          "Recover3": .map(["BadUnlockKeyTag": .map(["guesses_remaining": .unsignedInt(3)])])
+          "Recover3": .map([
+            "BadUnlockKeyTag": .map(["guesses_remaining": .unsignedInt(UInt64(guessesRemaining))])
+          ])
         ]).encode(),
-        decodingAs: .recover3(.badUnlockKeyTag(guessesRemaining: 3)))
+        decodingAs: .recover3(.badUnlockKeyTag(guessesRemaining: guessesRemaining)))
     }
 
     /// The realm's own unlock answer, but with a wrong encrypted-secret
