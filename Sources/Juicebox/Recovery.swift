@@ -65,14 +65,14 @@ public protocol JuiceboxHTTPTransport: Sendable {
 /// realm may have failed transiently or been rate limited, and a retry with
 /// the same inputs may then succeed, whichever case was reported. After a
 /// wrong PIN, though, the usual source of `invalidPin`, a retry with the same
-/// PIN uses up another guess (see `invalidPin`). `recover` itself does not
-/// retry a realm (zunda-pixel/juicebox-swift#7).
+/// PIN fails again and uses up another guess (see `invalidPin`). `recover`
+/// itself does not retry a realm (zunda-pixel/juicebox-swift#7).
 ///
-/// The descriptions are based on the reference client's `RecoverError`,
-/// with the differences noted under each case. Unlike the reference client,
-/// which stops a phase as soon as it falls short, `recover` waits for every
-/// answer and picks from all of the phase's errors, so the two can report
-/// different cases for the same answers.
+/// The descriptions are based on the reference client's (juicebox-sdk)
+/// `RecoverError`, with the differences noted under each case. Unlike the
+/// reference client, which stops a phase as soon as it falls short,
+/// `recover` waits for every answer and picks from all of the phase's
+/// errors, so the two can report different cases for the same answers.
 public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// The secret could not be unlocked.
   ///
@@ -84,14 +84,14 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   ///
   /// Usually the OPRF phase found the PIN wrong, and another PIN can be
   /// tried while guesses remain; each attempt with a wrong PIN uses up a
-  /// guess on the realms it asks (see `recover`). Less often, the PIN may
-  /// have been right: this case also comes from a realm's bad unlock key tag
-  /// after the OPRF phase has confirmed the PIN (as in the reference client),
-  /// or from a realm with no guesses left. The same PIN may then succeed on a
-  /// retry if another realm's failure is what left the phase short (see
-  /// ``JuiceboxRecoveryError``). Unlike the reference client's description,
-  /// zero alone does not mean the secret is locked: other realms may still
-  /// have guesses.
+  /// guess on each realm its OPRF phase asks (see `recover`). Less often,
+  /// the PIN may have been right: this case also comes from a realm's bad
+  /// unlock key tag after the OPRF phase has confirmed the PIN (as in the
+  /// reference client), or from a realm with no guesses left. The same PIN
+  /// may then succeed on a retry if another realm's failure is what left the
+  /// phase short (see ``JuiceboxRecoveryError``). Unlike the reference
+  /// client's description, zero alone does not mean the secret is locked:
+  /// other realms may still have guesses.
   case invalidPin(guessesRemaining: Int?)
   /// The secret is not registered, or not fully registered, with the realms,
   /// or no registration version has answers from enough realms (see
@@ -237,8 +237,7 @@ public struct JuiceboxRecovery: Sendable {
     let (blindingFactor, blindedInput) = OPRF.start(input: accessKey)
 
     // Each phase keeps its own errors, as the reference client joins each
-    // phase anew: a phase that fails reports its own realms' errors, not an
-    // earlier phase's.
+    // phase anew: a phase never reports an earlier phase's error.
     var oprfErrors: [JuiceboxRecoveryError] = []
     var pointShares:
       [(

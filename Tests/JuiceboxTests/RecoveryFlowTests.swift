@@ -493,7 +493,7 @@ struct RecoveryFlowTests {
     case unlockWithAnErrorAndAMismatch
     /// The same with a server error instead of the bad tag: one error can be
     /// spared, so the result is `assertion`, not `transient` (it used to be
-    /// `transient`; this package does not retry, #7).
+    /// `transient`; this package does not retry, zunda-pixel/juicebox-swift#7).
     case unlockWithAServerErrorAndAMismatch
     /// In the version phase, the first realm fails with a server error and
     /// the second reports another registration version: one error can be
