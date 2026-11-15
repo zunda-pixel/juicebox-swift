@@ -54,11 +54,12 @@ public protocol JuiceboxHTTPTransport: Sendable {
 /// those with the chosen registration version) and needs answers from at
 /// least the recover threshold of them; the rest can be spared. When more of
 /// a phase's realms fail than it can spare, `recover` reports the best of
-/// that phase's errors, in the order of these cases (between two
-/// `invalidPin`s, the fewer guesses left). Other failures report the case
-/// that fits them, such as `invalidPin` for a wrong PIN, `assertion` for
-/// answers that do not agree, or `assertion` for a secret that does not
-/// decrypt.
+/// that phase's errors, in this order: `invalidPin` (between two, the fewer
+/// guesses left), `notRegistered`, `invalidAuth`, `upgradeRequired`,
+/// `rateLimitExceeded`, `assertion`, `transient`. Other failures report the
+/// case that fits them, such as `invalidPin` for a wrong PIN,
+/// `notRegistered` or `assertion` for answers that do not agree, or
+/// `assertion` for a secret that does not decrypt.
 ///
 /// So the reported case need not be the only reason recovery failed: another
 /// realm may have failed transiently or been rate limited, and a retry with
@@ -71,17 +72,22 @@ public protocol JuiceboxHTTPTransport: Sendable {
 public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// The secret could not be unlocked.
   ///
-  /// `guessesRemaining` is the fewest guesses left that the realms reported
-  /// (`recover` always gives a value). Usually the OPRF phase found the PIN
-  /// wrong, and another PIN can be tried while guesses remain; each attempt
-  /// with a wrong PIN uses up a guess on the realms it asks (see `recover`).
-  /// Less often, the same PIN may succeed on a retry: in the unlock phase
-  /// this case can come from a realm's bad unlock key tag after the OPRF
-  /// phase has confirmed the PIN, as in the reference client, and the version
-  /// phase reports it when a realm has no guesses left while another realm's
-  /// failure left the phase short (see ``JuiceboxRecoveryError``). Unlike the
-  /// reference client's description, zero alone does not mean the secret is
-  /// locked: other realms may still have guesses.
+  /// `guessesRemaining` comes from the answers that decided the failure
+  /// (`recover` always gives a value): for a wrong PIN, the fewest among the
+  /// realms whose OPRF answers agreed; when a phase falls short, the fewest
+  /// among that phase's `invalidPin`s. A value above zero does not mean that
+  /// every realm has guesses left.
+  ///
+  /// Usually the OPRF phase found the PIN wrong, and another PIN can be
+  /// tried while guesses remain; each attempt with a wrong PIN uses up a
+  /// guess on the realms it asks (see `recover`). Less often, the same PIN
+  /// may succeed on a retry, for example when this case comes from a realm's
+  /// bad unlock key tag after the OPRF phase has confirmed the PIN (as in the
+  /// reference client), or when a realm with no guesses left is reported
+  /// because another realm's failure left the phase short (see
+  /// ``JuiceboxRecoveryError``). Unlike the reference client's description,
+  /// zero alone does not mean the secret is locked: other realms may still
+  /// have guesses.
   case invalidPin(guessesRemaining: Int?)
   /// The secret is not registered, or not fully registered, with the realms,
   /// or no registration version has answers from enough realms (see

@@ -516,8 +516,8 @@ struct RecoveryFlowTests {
     /// fewer guesses left ranks ahead.
     case unlockWithTwoBadUnlockKeyTags
 
-    /// The answers `PhaseFailureTransport` makes up when recovery gets as far
-    /// as the scenario.
+    /// The answers `PhaseFailureTransport` makes up or rewrites when recovery
+    /// gets as far as the scenario.
     var injectedAnswers: Int {
       switch self {
       case .oprf, .unlockAfterAVersionError, .unlockWithAnErrorAndAMismatch,
