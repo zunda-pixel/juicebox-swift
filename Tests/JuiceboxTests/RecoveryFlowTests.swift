@@ -226,6 +226,9 @@ struct RecoveryFlowTests {
       /// Only the first realm's PIN requests throw `CancellationError`; the
       /// other realms answer.
       case cancelsOneRealm
+      /// Only the first realm's PIN requests cancel their own task and then
+      /// answer; the other realms answer normally.
+      case oneRealmCancelsItsOwnTask
     }
 
     let network: FakeNetwork
@@ -258,6 +261,11 @@ struct RecoveryFlowTests {
           return try await network.send(request)
         }
         throw CancellationError()
+      case .oneRealmCancelsItsOwnTask:
+        if request.url.hasPrefix("https://realm1.") {
+          unsafe withUnsafeCurrentTask { unsafe $0?.cancel() }
+        }
+        return try await network.send(request)
       }
     }
   }
@@ -326,10 +334,10 @@ struct RecoveryFlowTests {
   }
 
   /// When the caller cancels recovery during the PIN phase, recovery stops
-  /// before the unlock phase, even if the transport answers anyway. The PIN
-  /// requests of a phase start together, but a request that has not reached
-  /// the transport when the caller cancels is not sent, so each realm is
-  /// asked at most once.
+  /// before the unlock phase, even if the transport answers anyway. Between
+  /// one realm and all of them get a PIN request: a phase asks each realm
+  /// once and recovery never reaches the unlock phase, while a request that
+  /// has not reached the transport when the caller cancels is not sent.
   @Test(.timeLimit(.minutes(1)))
   func theCallersCancellationStopsRecoveryBeforeTheNextPhase() async throws {
     let (network, configuration, tokens) = try makeNetwork()
@@ -361,9 +369,12 @@ struct RecoveryFlowTests {
       }
       #expect(await transport.unlockRequests == 0)
     }
-    let oneRealm = CancellingTransport(network: network, mode: .cancelsOneRealm)
-    let secret = try await recovery.recover(pin: Self.pin, transport: oneRealm)
-    #expect(secret == Self.userSecret)
+    for mode in [CancellingTransport.Mode.cancelsOneRealm, .oneRealmCancelsItsOwnTask] {
+      let oneRealm = CancellingTransport(network: network, mode: mode)
+      let secret = try await recovery.recover(pin: Self.pin, transport: oneRealm)
+      #expect(secret == Self.userSecret)
+      #expect(await oneRealm.pinRequests == 2 * Self.realmCount)
+    }
   }
 
   /// Answers each phase's requests in the reverse of the realms' order: the

@@ -31,8 +31,10 @@ public struct JuiceboxHTTPResponse: Sendable {
 }
 
 /// Performs the realm requests recovery asks for. Recovery calls `send`
-/// concurrently: each phase sends one request to every realm at once, so an
-/// implementation must not assume one request at a time.
+/// concurrently: each phase asks every realm at once, so an implementation
+/// must not assume one request at a time. A realm has at most one request in
+/// flight; a hardware realm's PIN phases call `send` twice in turn (the Noise
+/// handshake, then the request).
 ///
 /// An error `send` throws, including `CancellationError` or a cancelled
 /// `URLError`, is a failure of that realm unless the caller cancelled
@@ -104,6 +106,9 @@ public struct JuiceboxRecovery: Sendable {
   ///
   /// Throws `CancellationError` only when the caller cancelled recovery.
   /// Otherwise a failure is a `JuiceboxRecoveryError`.
+  ///
+  /// Each phase asks every realm at once, so cancelling during the PIN phase
+  /// may still use a guess on each realm that the phase already asked.
   @concurrent
   public func recover(
     pin: [UInt8], transport: any JuiceboxHTTPTransport
@@ -474,7 +479,8 @@ public struct JuiceboxRecovery: Sendable {
       // also report a cancellation for its own reasons (an invalidated
       // session, a cancelled redirect); that is a failure of this realm, so
       // the other realms can still answer, and the caller does not mistake a
-      // real failure for its own cancellation.
+      // real failure for its own cancellation. This only checks the request's
+      // own task; the phase decides whether the caller cancelled.
       try Task.checkCancellation()
       throw JuiceboxRecoveryError.transient
     }
