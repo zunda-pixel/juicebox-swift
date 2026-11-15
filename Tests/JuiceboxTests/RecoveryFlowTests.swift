@@ -151,15 +151,18 @@ struct RecoveryFlowTests {
 
   // MARK: Setup
 
-  /// Without `pinHash`, the setup hashes `pin` with `version`, `mode`, and
-  /// an empty `userInfo`, so the test must give `JuiceboxRecovery` no
-  /// `userInfo`.
+  /// Builds fake realms that hold shares of `userSecret` registered under
+  /// `pin`, and the configuration and tokens for them.
+  ///
+  /// Without `pinHash`, the setup hashes `pin` with `Self.version`, `mode`,
+  /// and an empty `userInfo`, so the test must give `JuiceboxRecovery` the
+  /// default (empty) `userInfo`.
   ///
   /// - Parameter pinHash: The PIN's hash, when it is already known, so the
   ///   setup does not hash the PIN itself (Standard2019 takes seconds).
   ///   `pin` is then unused. The hash must be of the PIN that the test
-  ///   recovers with, `version`, `mode`, and the `userInfo` the test gives
-  ///   `JuiceboxRecovery`.
+  ///   recovers with, `Self.version`, `mode`, and the `userInfo` the test
+  ///   gives `JuiceboxRecovery`.
   func makeNetwork(
     pin: [UInt8] = RecoveryFlowTests.pin, mode: JuiceboxPinHashingMode = .fastInsecure,
     pinHash: (accessKey: [UInt8], encryptionKeySeed: [UInt8])? = nil
@@ -243,7 +246,6 @@ struct RecoveryFlowTests {
 
     let network: FakeNetwork
     let mode: Mode
-    private(set) var pinRequests = 0
     private(set) var unlockRequests = 0
 
     init(network: FakeNetwork, mode: Mode) {
@@ -256,7 +258,6 @@ struct RecoveryFlowTests {
       if value == .textString("Recover1") {
         return try await network.send(request)
       }
-      pinRequests += 1
       if value["Recover3"] != nil { unlockRequests += 1 }
       switch mode {
       case .throwsCancellation:
@@ -395,8 +396,9 @@ struct RecoveryFlowTests {
   /// When the caller cancels recovery during the PIN phase, recovery stops
   /// before the unlock phase, even if the transport answers anyway. Anywhere
   /// from one realm to all of them get a PIN request: a phase asks each realm
-  /// once and recovery never reaches the unlock phase, while a request that
-  /// has not reached the transport when the caller cancels is not sent.
+  /// once and recovery never reaches the unlock phase, while a request
+  /// whose task sees the cancellation before calling the transport is not
+  /// sent.
   @Test(.timeLimit(.minutes(1)))
   func theCallersCancellationStopsRecoveryBeforeTheNextPhase() async throws {
     let (network, configuration, tokens) = try makeNetwork()
