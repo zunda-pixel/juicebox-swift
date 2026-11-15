@@ -585,6 +585,33 @@ struct RecoveryFlowTests {
     #expect(await transport.unlockRequests == 0)
   }
 
+  /// Records the kind of each request and the URL it went to, and passes
+  /// the request on.
+  private actor RecordingTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    private(set) var requests: [(url: String, kind: String)] = []
+
+    init(network: FakeNetwork) {
+      self.network = network
+    }
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      let value = try decodeCBOR(request.body)
+      let kind =
+        value == .textString("Recover1")
+        ? "Recover1"
+        : ["Recover2", "Recover3"].first { value[$0] != nil } ?? "other"
+      requests.append((request.url, kind))
+      return try await network.send(request)
+    }
+
+    func kinds(sentTo prefix: String) -> [String] {
+      requests.filter { $0.url.hasPrefix(prefix) }.map(\.kind)
+    }
+  }
+
+  /// With one realm down, recovery succeeds with the others, and the OPRF
+  /// and unlock phases ask only the realms that reported the chosen version.
   @Test func recoverWithOneRealmDown() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     // Drop the second realm by pointing it at an unreachable address.
@@ -602,8 +629,13 @@ struct RecoveryFlowTests {
       """
     let degraded = try JuiceboxConfiguration.parse(Array(json.utf8))
     let recovery = JuiceboxRecovery(configuration: degraded, tokens: tokens)
-    let secret = try await recovery.recover(pin: Self.pin, transport: network)
+    let transport = RecordingTransport(network: network)
+    let secret = try await recovery.recover(pin: Self.pin, transport: transport)
     #expect(secret == Self.userSecret)
+    #expect(await transport.kinds(sentTo: "https://down.test/") == ["Recover1"])
+    for realm in ["https://realm1.test/", "https://realm3.test/"] {
+      #expect(await transport.kinds(sentTo: realm) == ["Recover1", "Recover2", "Recover3"])
+    }
   }
 
   @Test func wrongPinReportsGuesses() async throws {

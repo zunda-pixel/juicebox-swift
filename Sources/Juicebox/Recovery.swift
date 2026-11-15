@@ -113,10 +113,10 @@ public struct JuiceboxRecovery: Sendable {
   /// Otherwise a failure is a `JuiceboxRecoveryError`.
   ///
   /// A realm counts a guess when the OPRF phase (Recover2) asks it, and
-  /// clears the count only when the unlock phase (Recover3) succeeds there.
-  /// Each phase asks all of its realms at once, so cancelling once the OPRF
-  /// phase has started may leave a guess used on each realm it already
-  /// asked.
+  /// clears the count only when the unlock phase (Recover3) succeeds there,
+  /// so cancelling once the OPRF phase has started may leave a guess used on
+  /// each realm it asked. The phase asks all of its realms at once, so that
+  /// can be every realm that reported the chosen version.
   ///
   /// A cancellation that arrives while the PIN is being hashed (Standard2019
   /// takes seconds) takes effect once the hashing ends, before the OPRF
@@ -316,9 +316,9 @@ public struct JuiceboxRecovery: Sendable {
     try await requestEach(realms, transport: transport) { _ in request }
   }
 
-  /// Sends one request to each of `realms` at once and returns each outcome in the
-  /// realms' order, so a phase checks the answers in the same order however
-  /// they arrive. A phase then takes as long as its slowest realm instead of
+  /// Sends one request to each of `realms` at once and returns each outcome
+  /// in the realms' order, so a phase checks the answers in the same order
+  /// however they arrive. A phase then takes as long as its slowest realm instead of
   /// the sum of all of them, which matters when several realms are slow or
   /// unresponsive. Every request is awaited; the reference client also
   /// returns early once too many realms have failed, which this does not do.
