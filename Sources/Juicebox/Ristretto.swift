@@ -1,5 +1,5 @@
+import Clibsodium
 import Crypto
-import _Clibsodium
 
 struct RistrettoPoint: Sendable, Equatable {
   private var bytes: [UInt8]

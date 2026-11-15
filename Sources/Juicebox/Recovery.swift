@@ -1,7 +1,7 @@
+import Clibsodium
 import Crypto
 import Foundation
 public import HTTPTypes
-import _Clibsodium
 
 let juiceboxSodiumIsReady = sodium_init() >= 0
 
