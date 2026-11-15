@@ -48,20 +48,96 @@ public protocol JuiceboxHTTPTransport: Sendable {
   func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse
 }
 
-/// Why recovery failed. `invalidPin` carries the guesses left when the realms
-/// report them.
+/// Why recovery failed.
+///
+/// Each phase asks some realms (the first phase all of them, the later ones
+/// those with the chosen registration version) and needs answers from at
+/// least the recover threshold of them; the rest can be spared. When more of
+/// a phase's realms fail than it can spare (the phase falls short),
+/// `recover` reports the best of that phase's errors, in this order:
+/// `invalidPin` (between two, the fewer guesses left), `notRegistered`,
+/// `invalidAuth`, `upgradeRequired`, `rateLimitExceeded`, `assertion`,
+/// `transient`. Other failures report the case that fits them, such as
+/// `invalidPin` for a wrong PIN, `notRegistered` or `assertion` for answers
+/// that do not agree, or `assertion` for a secret that does not decrypt.
+///
+/// So the reported case need not be the only reason recovery failed: another
+/// realm may have failed transiently or been rate limited, and a retry with
+/// the same inputs may then succeed, whichever case was reported. Any retry,
+/// even with the right PIN, may use up a guess on a realm the OPRF phase asks
+/// whose unlock does not then succeed (see
+/// ``JuiceboxRecovery/recover(pin:transport:)``), and after a wrong PIN, the
+/// usual source of `invalidPin`, a retry with the same PIN fails again (see
+/// ``JuiceboxRecoveryError/invalidPin(guessesRemaining:)``). `recover`
+/// itself does not retry a realm (zunda-pixel/juicebox-swift#7).
+///
+/// The descriptions are based on the reference client's (juicebox-sdk)
+/// `RecoverError`, with the differences noted under each case. Unlike the
+/// reference client, which stops a phase as soon as it falls short,
+/// `recover` waits for every answer and picks from all of the phase's
+/// errors, so the two can report different cases for the same answers.
 public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
+  /// The secret could not be unlocked.
+  ///
+  /// `guessesRemaining` comes from the answers that decided the failure
+  /// (`recover` always gives a value): for a wrong PIN, the fewest among the
+  /// realms whose OPRF answers agreed; when a phase falls short, the fewest
+  /// among that phase's `invalidPin`s. A value above zero does not mean that
+  /// every realm has guesses left.
+  ///
+  /// Usually the OPRF phase found the PIN wrong, and another PIN can be
+  /// tried while guesses remain; an attempt with a wrong PIN may use up a
+  /// guess on the realms its OPRF phase asks (see
+  /// ``JuiceboxRecovery/recover(pin:transport:)``). Less often, the PIN may
+  /// have been right: this case also comes from a realm's bad unlock key tag
+  /// after the OPRF phase has confirmed the PIN (as in the reference client,
+  /// juicebox-sdk), or from a realm with no guesses left. The same PIN may
+  /// then succeed on a retry if another realm's failure is what left the
+  /// phase short (see ``JuiceboxRecoveryError``). Unlike the reference
+  /// client's description, zero alone does not mean the secret is locked:
+  /// other realms may still have guesses.
   case invalidPin(guessesRemaining: Int?)
+  /// The secret is not registered, or not fully registered, with the realms,
+  /// or enough realms answered but disagree on the registration version, so
+  /// that no version has answers from enough of them (see
+  /// ``JuiceboxRecoveryError`` for when a retry may help).
   case notRegistered
+  /// A realm rejected the authentication token, or no token was given for
+  /// a realm. A retry may still succeed if another realm's failure is what
+  /// left the phase short (see ``JuiceboxRecoveryError``).
   case invalidAuth
+  /// A realm requires a newer client. A retry may still succeed if another
+  /// realm's failure is what left the phase short (see
+  /// ``JuiceboxRecoveryError``).
   case upgradeRequired
+  /// The tenant made too many requests; try again later.
   case rateLimitExceeded
+  /// A software error or an inconsistency on the realms' side.
+  ///
+  /// For example, an answer that does not verify, or too few answers that
+  /// agree (on the OPRF verifying key and unlock key commitment, or on an
+  /// encrypted secret whose commitment matches). Retrying with the same
+  /// inputs is not expected to help. Unlike the reference client's
+  /// description, which rules out a retry with the same parameters, a retry
+  /// may help in the cases described under ``JuiceboxRecoveryError``.
   case assertion
+  /// A failure in sending a request or receiving its answer.
+  ///
+  /// This covers a non-2xx status other than 401, 426 and 429 whose body is
+  /// not a realm answer, a hardware realm's unavailable error or its
+  /// missing-session or session error (zunda-pixel/juicebox-swift#8; the
+  /// reference client, juicebox-sdk, reports these two as an assertion on a
+  /// new session, which `recover` always opens), any error the transport
+  /// throws, and the answer to a request whose own task was cancelled, as
+  /// long as the caller has not cancelled (then `recover` throws
+  /// `CancellationError`). Retrying with the same inputs may succeed.
   case transient
+  /// Not reported by `recover`: a configuration that cannot be used fails
+  /// earlier, in `JuiceboxConfiguration.parse` (`JuiceboxConfigurationError`).
   case invalidConfiguration
 
   /// The reference client's error ordering, used to pick the most specific
-  /// failure when too few realms answer.
+  /// failure when more of a phase's realms fail than it can spare.
   var rank: Int {
     switch self {
     case .invalidPin: return 0
@@ -129,28 +205,39 @@ public struct JuiceboxRecovery: Sendable {
     guard juiceboxSodiumIsReady else { throw JuiceboxRecoveryError.assertion }
     let threshold = configuration.recoverThreshold
 
+    // Each phase keeps its own errors, as the reference client joins each
+    // phase anew: a phase never reports an earlier phase's error. As in the
+    // reference client (`join_at_least_threshold`), more errors than the
+    // phase's realms can spare fail the phase with the best of them (of all
+    // of them, since every answer is awaited; see `requestEach`). Each phase
+    // counts its errors rather than its answers, so an answer skipped without
+    // an error never makes the phase report an error it could spare: too few
+    // usable answers end in the phase's check that enough of them agree.
+
     // Phase 1: every realm reports the registration version.
     var versions: [(version: [UInt8], realm: JuiceboxRealm)] = []
-    var errors: [JuiceboxRecoveryError] = []
+    var versionErrors: [JuiceboxRecoveryError] = []
     let phase1 = try await requestEach(
       configuration.realms, transport: transport, request: .recover1)
     for (realm, outcome) in zip(configuration.realms, phase1) {
       do {
         guard case .recover1(let response) = try outcome.get() else {
-          errors.append(.assertion)
+          versionErrors.append(.assertion)
           continue
         }
         switch response {
         case .ok(let version): versions.append((version, realm))
-        case .notRegistered: errors.append(.notRegistered)
-        case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
+        case .notRegistered: versionErrors.append(.notRegistered)
+        case .noGuesses: versionErrors.append(.invalidPin(guessesRemaining: 0))
         }
       } catch {
         try Task.checkCancellation()
-        errors.append(recoveryError(from: error))
+        versionErrors.append(recoveryError(from: error))
       }
     }
-    guard versions.count >= threshold else { throw bestError(errors) }
+    guard versionErrors.count <= configuration.realms.count - threshold else {
+      throw bestError(versionErrors)
+    }
 
     let byVersion = Dictionary(grouping: versions, by: { $0.version })
     let viableVersions = byVersion.filter { $0.value.count >= threshold }
@@ -167,6 +254,7 @@ public struct JuiceboxRecovery: Sendable {
       mode: configuration.pinHashingMode)
     let (blindingFactor, blindedInput) = OPRF.start(input: accessKey)
 
+    var oprfErrors: [JuiceboxRecoveryError] = []
     var pointShares:
       [(
         share: SecretShare<RistrettoPoint>, commitment: [UInt8],
@@ -178,7 +266,7 @@ public struct JuiceboxRecovery: Sendable {
     for (realm, outcome) in zip(realms, phase2) {
       do {
         guard case .recover2(let recover2) = try outcome.get() else {
-          errors.append(.assertion)
+          oprfErrors.append(.assertion)
           continue
         }
         switch recover2 {
@@ -195,7 +283,7 @@ public struct JuiceboxRecovery: Sendable {
             let index = configuration.shareIndex(for: realm.id),
             numGuesses >= guessCount
           else {
-            errors.append(.assertion)
+            oprfErrors.append(.assertion)
             continue
           }
           pointShares.append(
@@ -204,16 +292,16 @@ public struct JuiceboxRecovery: Sendable {
               unlockKeyCommitment, signedPublicKey.verifyingKey,
               Int(numGuesses - guessCount)
             ))
-        case .versionMismatch: errors.append(.assertion)
-        case .notRegistered: errors.append(.notRegistered)
-        case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
+        case .versionMismatch: oprfErrors.append(.assertion)
+        case .notRegistered: oprfErrors.append(.notRegistered)
+        case .noGuesses: oprfErrors.append(.invalidPin(guessesRemaining: 0))
         }
       } catch {
         try Task.checkCancellation()
-        errors.append(recoveryError(from: error))
+        oprfErrors.append(recoveryError(from: error))
       }
     }
-    guard pointShares.count >= threshold else { throw bestError(errors) }
+    guard oprfErrors.count <= realms.count - threshold else { throw bestError(oprfErrors) }
 
     let byKey = Dictionary(
       grouping: pointShares,
@@ -242,6 +330,7 @@ public struct JuiceboxRecovery: Sendable {
 
     // Phase 3: exchange the unlock key tag for each realm's scalar share,
     // then decrypt the user secret.
+    var unlockErrors: [JuiceboxRecoveryError] = []
     var scalarShares: [(share: SecretShare<RistrettoScalar>, encryptedSecret: [UInt8])] = []
     let phase3 = try await requestEach(realms, transport: transport) { realm in
       .recover3(
@@ -251,7 +340,7 @@ public struct JuiceboxRecovery: Sendable {
     for (realm, outcome) in zip(realms, phase3) {
       do {
         guard case .recover3(let recover3) = try outcome.get() else {
-          errors.append(.assertion)
+          unlockErrors.append(.assertion)
           continue
         }
         switch recover3 {
@@ -259,7 +348,7 @@ public struct JuiceboxRecovery: Sendable {
           guard let scalar = canonicalScalar(scalarShare),
             let index = configuration.shareIndex(for: realm.id)
           else {
-            errors.append(.assertion)
+            unlockErrors.append(.assertion)
             continue
           }
           let ours = JuiceboxKeys.encryptedUserSecretCommitment(
@@ -270,18 +359,23 @@ public struct JuiceboxRecovery: Sendable {
             (
               SecretShare(index: index, secret: scalar), encryptedSecret
             ))
-        case .versionMismatch: errors.append(.assertion)
-        case .notRegistered: errors.append(.notRegistered)
+        case .versionMismatch: unlockErrors.append(.assertion)
+        case .notRegistered: unlockErrors.append(.notRegistered)
         case .badUnlockKeyTag(let guesses):
-          errors.append(.invalidPin(guessesRemaining: Int(guesses)))
-        case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
+          unlockErrors.append(.invalidPin(guessesRemaining: Int(guesses)))
+        case .noGuesses: unlockErrors.append(.invalidPin(guessesRemaining: 0))
         }
       } catch {
         try Task.checkCancellation()
-        errors.append(recoveryError(from: error))
+        unlockErrors.append(recoveryError(from: error))
       }
     }
-    guard scalarShares.count >= threshold else { throw bestError(errors) }
+    // As in the reference client (`recover.rs`), answers whose encrypted-secret
+    // commitment did not match are skipped without an error, so this phase
+    // can have too few matching answers with no more errors than it can spare
+    // (an inconsistency on the realms' side), which reports an assertion.
+    guard unlockErrors.count <= realms.count - threshold else { throw bestError(unlockErrors) }
+    guard scalarShares.count >= threshold else { throw JuiceboxRecoveryError.assertion }
 
     let bySecret = Dictionary(grouping: scalarShares, by: { $0.encryptedSecret })
     let viableSecrets = bySecret.filter { $0.value.count >= threshold }
@@ -536,6 +630,10 @@ public struct JuiceboxRecovery: Sendable {
     return .transient
   }
 
+  /// The best of a phase's errors. Each caller has more errors than its phase
+  /// can spare, and a phase can spare zero or more realms (`parse` keeps the
+  /// threshold within the realm count), so `errors` is never empty; the
+  /// `assertion` fallback only keeps a later caller from crashing.
   private func bestError(_ errors: [JuiceboxRecoveryError]) -> JuiceboxRecoveryError {
     errors.min {
       ($0.sortKey.0, $0.sortKey.1) < ($1.sortKey.0, $1.sortKey.1)

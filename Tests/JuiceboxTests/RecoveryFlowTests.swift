@@ -450,6 +450,324 @@ struct RecoveryFlowTests {
     }
   }
 
+  /// Scenarios for `aFailedPhaseIsJudgedByItsOwnAnswers` (the cases with an
+  /// expected error) and `aSingleMismatchedAnswerIsSkipped` (the two without
+  /// one, which recover). A phase fails with the best of its own errors
+  /// (`bestError` picks the lowest rank) when more of its realms fail than
+  /// can be spared, never with an earlier phase's error. In the unlock
+  /// phase, too few matching answers with no more errors than can be spared
+  /// come from answers whose encrypted-secret commitment does not match, and
+  /// report `assertion`. In the version and OPRF phases, when no more realms
+  /// fail than can be spared but too few answers agree to reach the
+  /// threshold, the phase reports `notRegistered` or `assertion`
+  /// respectively, even if the other realm's failure is transient or a rate
+  /// limit.
+  enum PhaseScenario: CaseIterable, Sendable {
+    /// The first realm reports no guesses left in the version phase (an
+    /// error that ranks ahead), and the second realm's OPRF request fails
+    /// with a server error.
+    case oprfAfterAVersionError
+    /// The third realm's OPRF request is rate limited (an error that ranks
+    /// ahead), and the second and third realms' unlock requests fail with a
+    /// server error. The unlock phase also asks a realm that failed in the
+    /// OPRF phase (zunda-pixel/juicebox-swift#4), so three answers are made
+    /// up.
+    case unlockAfterAnOprfRateLimit
+    /// In the unlock phase, the first and third realms fail with a server
+    /// error and the second reports a bad unlock key tag with 3 guesses left:
+    /// the best of the phase's own errors, which is neither the first nor the
+    /// last one.
+    case unlockWithThreeErrors
+    /// The first realm reports no guesses left in the version phase, so the
+    /// unlock phase asks two realms and can spare none; the second realm
+    /// reports a bad unlock key tag with 3 guesses left: one error is more
+    /// than the phase's realms can spare (counting all configured realms
+    /// would spare it).
+    case unlockAfterAVersionError
+    /// The first realm reports no guesses left in the version phase, and the
+    /// other two realms answer the unlock request with a wrong commitment,
+    /// which adds no error.
+    case unlockWithoutErrors
+    /// In the unlock phase, the first realm reports a bad unlock key tag, the
+    /// second answers with a wrong commitment, and the third answers
+    /// correctly: one error can be spared, so too few answers match because
+    /// of the mismatch.
+    case unlockWithAnErrorAndAMismatch
+    /// The same with a server error instead of the bad tag: one error can be
+    /// spared, so the result is `assertion`, not `transient` (the reference
+    /// client reports `Assertion` only after its retries of the 503 fail;
+    /// this package does not retry, zunda-pixel/juicebox-swift#7).
+    case unlockWithAServerErrorAndAMismatch
+    /// In the version phase, the first realm fails with a server error and
+    /// the second reports another registration version: one error can be
+    /// spared, but no version has enough realms.
+    case versionWithAServerErrorAndAMismatch
+    /// In the OPRF phase, the first realm fails with a server error and the
+    /// second answers with a wrong unlock key commitment: one error can be
+    /// spared, but no OPRF verifying key and commitment has enough realms.
+    case oprfWithAServerErrorAndAMismatch
+    /// The same with a rate limit instead of the server error: if the made-up
+    /// OPRF answer failed to verify, the phase would have two errors and
+    /// report the better one, `rateLimitExceeded`, so `assertion` shows that
+    /// the answer verified and was set apart by its commitment.
+    case oprfWithARateLimitAndAMismatch
+    /// In the version phase, the first realm reports no guesses left and the
+    /// second fails with a server error: the phase falls short, and the best
+    /// of its errors is `invalidPin(guessesRemaining: 0)`, although the
+    /// realms that did not fail may still have guesses.
+    case versionWithNoGuessesAndAServerError
+    /// In the unlock phase, the first realm reports a bad unlock key tag with
+    /// 3 guesses left and the second with 2: between two `invalidPin`s, the
+    /// fewer guesses left ranks ahead.
+    case unlockWithTwoBadUnlockKeyTags
+    /// In the unlock phase, only the second realm answers with a wrong
+    /// commitment: its answer is skipped, and the other two recover the
+    /// secret (no error is expected).
+    case unlockWithOnlyAMismatch
+    /// In the OPRF phase, only the second realm answers with a wrong unlock
+    /// key commitment: the other two agree on the OPRF key, and recovery
+    /// succeeds (no error is expected).
+    case oprfWithOnlyAMismatch
+
+    /// The answers `ScenarioTransport` makes up or rewrites when recovery
+    /// gets as far as the scenario.
+    var injectedAnswers: Int {
+      switch self {
+      case .oprfAfterAVersionError, .unlockAfterAVersionError, .unlockWithAnErrorAndAMismatch,
+        .unlockWithAServerErrorAndAMismatch, .versionWithAServerErrorAndAMismatch,
+        .oprfWithAServerErrorAndAMismatch, .oprfWithARateLimitAndAMismatch,
+        .versionWithNoGuessesAndAServerError, .unlockWithTwoBadUnlockKeyTags:
+        2
+      case .unlockAfterAnOprfRateLimit, .unlockWithThreeErrors, .unlockWithoutErrors: 3
+      case .unlockWithOnlyAMismatch, .oprfWithOnlyAMismatch: 1
+      }
+    }
+
+    /// The error recovery reports, or nil when it recovers the secret.
+    var expectedError: JuiceboxRecoveryError? {
+      switch self {
+      case .oprfAfterAVersionError, .unlockAfterAnOprfRateLimit: .transient
+      case .unlockWithThreeErrors, .unlockAfterAVersionError: .invalidPin(guessesRemaining: 3)
+      case .unlockWithoutErrors, .unlockWithAnErrorAndAMismatch,
+        .unlockWithAServerErrorAndAMismatch, .oprfWithAServerErrorAndAMismatch,
+        .oprfWithARateLimitAndAMismatch:
+        .assertion
+      case .versionWithAServerErrorAndAMismatch: .notRegistered
+      case .versionWithNoGuessesAndAServerError: .invalidPin(guessesRemaining: 0)
+      case .unlockWithTwoBadUnlockKeyTags: .invalidPin(guessesRemaining: 2)
+      case .unlockWithOnlyAMismatch, .oprfWithOnlyAMismatch: nil
+      }
+    }
+  }
+
+  private actor ScenarioTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    let scenario: PhaseScenario
+    /// The answers made up or rewritten instead of passed on as they are, so
+    /// the test can tell that recovery got as far as the scenario.
+    private(set) var injectedAnswers = 0
+
+    init(network: FakeNetwork, scenario: PhaseScenario) {
+      self.network = network
+      self.scenario = scenario
+    }
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      if let answer = try await injectedAnswer(for: request) {
+        injectedAnswers += 1
+        return answer
+      }
+      return try await network.send(request)
+    }
+
+    private func injectedAnswer(for request: JuiceboxHTTPRequest) async throws
+      -> JuiceboxHTTPResponse?
+    {
+      let value = try decodeCBOR(request.body)
+      let isRecover1 = value == .textString("Recover1")
+      let isRecover2 = value["Recover2"] != nil
+      let isRecover3 = value["Recover3"] != nil
+      let isRealm1 = request.url.hasPrefix("https://realm1.")
+      let isRealm2 = request.url.hasPrefix("https://realm2.")
+      let isRealm3 = request.url.hasPrefix("https://realm3.")
+      switch scenario {
+      case .oprfAfterAVersionError:
+        if isRealm1, isRecover1 { return try Self.noGuesses() }
+        if isRealm2, isRecover2 { return Self.serverError }
+      case .unlockAfterAnOprfRateLimit:
+        if isRealm3, isRecover2 { return JuiceboxHTTPResponse(statusCode: 429, body: []) }
+        if isRealm2 || isRealm3, isRecover3 { return Self.serverError }
+      case .unlockWithThreeErrors:
+        if isRealm1 || isRealm3, isRecover3 { return Self.serverError }
+        if isRealm2, isRecover3 { return try Self.badUnlockKeyTag() }
+      case .unlockAfterAVersionError:
+        if isRealm1, isRecover1 { return try Self.noGuesses() }
+        if isRealm2, isRecover3 { return try Self.badUnlockKeyTag() }
+      case .unlockWithoutErrors:
+        if isRealm1, isRecover1 { return try Self.noGuesses() }
+        if isRealm2 || isRealm3, isRecover3 { return try mismatchedCommitment(for: request) }
+      case .unlockWithAnErrorAndAMismatch:
+        if isRealm1, isRecover3 { return try Self.badUnlockKeyTag() }
+        if isRealm2, isRecover3 { return try mismatchedCommitment(for: request) }
+      case .unlockWithAServerErrorAndAMismatch:
+        if isRealm1, isRecover3 { return Self.serverError }
+        if isRealm2, isRecover3 { return try mismatchedCommitment(for: request) }
+      case .versionWithAServerErrorAndAMismatch:
+        if isRealm1, isRecover1 { return Self.serverError }
+        if isRealm2, isRecover1 { return try Self.otherVersion() }
+      case .oprfWithAServerErrorAndAMismatch:
+        if isRealm1, isRecover2 { return Self.serverError }
+        if isRealm2, isRecover2 { return try await mismatchedUnlockKeyCommitment(for: request) }
+      case .oprfWithARateLimitAndAMismatch:
+        if isRealm1, isRecover2 { return JuiceboxHTTPResponse(statusCode: 429, body: []) }
+        if isRealm2, isRecover2 { return try await mismatchedUnlockKeyCommitment(for: request) }
+      case .unlockWithOnlyAMismatch:
+        if isRealm2, isRecover3 { return try mismatchedCommitment(for: request) }
+      case .oprfWithOnlyAMismatch:
+        if isRealm2, isRecover2 { return try await mismatchedUnlockKeyCommitment(for: request) }
+      case .versionWithNoGuessesAndAServerError:
+        if isRealm1, isRecover1 { return try Self.noGuesses() }
+        if isRealm2, isRecover1 { return Self.serverError }
+      case .unlockWithTwoBadUnlockKeyTags:
+        if isRealm1, isRecover3 { return try Self.badUnlockKeyTag() }
+        if isRealm2, isRecover3 { return try Self.badUnlockKeyTag(guessesRemaining: 2) }
+      }
+      return nil
+    }
+
+    static let serverError = JuiceboxHTTPResponse(statusCode: 503, body: [])
+
+    static func noGuesses() throws -> JuiceboxHTTPResponse {
+      try answer(
+        CBOR.map(["Recover1": .textString("NoGuesses")]).encode(),
+        decodingAs: .recover1(.noGuesses))
+    }
+
+    static func otherVersion() throws -> JuiceboxHTTPResponse {
+      let version = [UInt8](repeating: 6, count: 16)
+      return try answer(
+        RecoveryFlowTests.encodeRecover1Ok(version: version),
+        decodingAs: .recover1(.ok(version: version)))
+    }
+
+    static func badUnlockKeyTag(guessesRemaining: UInt16 = 3) throws -> JuiceboxHTTPResponse {
+      try answer(
+        CBOR.map([
+          "Recover3": .map([
+            "BadUnlockKeyTag": .map(["guesses_remaining": .unsignedInt(UInt64(guessesRemaining))])
+          ])
+        ]).encode(),
+        decodingAs: .recover3(.badUnlockKeyTag(guessesRemaining: guessesRemaining)))
+    }
+
+    /// The realm's own unlock answer, but with a wrong encrypted-secret
+    /// commitment.
+    private func mismatchedCommitment(for request: JuiceboxHTTPRequest) throws
+      -> JuiceboxHTTPResponse
+    {
+      let realm = try #require(network.realms[request.url])
+      let wrongCommitment = [UInt8](repeating: 0, count: 16)
+      return try Self.answer(
+        CBOR.map([
+          "Recover3": .map([
+            "Ok": .map([
+              "encryption_key_scalar_share": .byteString(realm.scalarShare.bytes),
+              "encrypted_secret": .byteString(realm.encryptedSecret),
+              "encrypted_secret_commitment": .byteString(wrongCommitment),
+            ])
+          ])
+        ]).encode(),
+        decodingAs: .recover3(
+          .ok(
+            scalarShare: realm.scalarShare.bytes, encryptedSecret: realm.encryptedSecret,
+            commitment: wrongCommitment)))
+    }
+
+    /// The realm's own OPRF answer, but with a wrong unlock key commitment.
+    private func mismatchedUnlockKeyCommitment(for request: JuiceboxHTTPRequest) async throws
+      -> JuiceboxHTTPResponse
+    {
+      let realmAnswer = try await network.send(request)
+      guard
+        case .recover2(
+          .ok(let signed, let blindedResult, let proof, _, let numGuesses, let guessCount)) =
+          try SecretsResponse.decode(realmAnswer.body)
+      else {
+        Issue.record("the realm's own OPRF answer must be Ok")
+        return realmAnswer
+      }
+      let wrongCommitment = [UInt8](repeating: 0, count: 32)
+      return try Self.answer(
+        CBOR.map([
+          "Recover2": .map([
+            "Ok": .map([
+              "oprf_signed_public_key": .map([
+                "public_key": .byteString(signed.publicKey),
+                "verifying_key": .byteString(signed.verifyingKey),
+                "signature": .byteString(signed.signature),
+              ]),
+              "oprf_blinded_result": .byteString(blindedResult),
+              "oprf_proof": .map([
+                "c": .byteString(proof.c),
+                "beta_z": .byteString(proof.betaZ),
+              ]),
+              "unlock_key_commitment": .byteString(wrongCommitment),
+              "num_guesses": .unsignedInt(UInt64(numGuesses)),
+              "guess_count": .unsignedInt(UInt64(guessCount)),
+            ])
+          ])
+        ]).encode(),
+        decodingAs: .recover2(
+          .ok(
+            signedPublicKey: signed, blindedResult: blindedResult, proof: proof,
+            unlockKeyCommitment: wrongCommitment, numGuesses: numGuesses, guessCount: guessCount)))
+    }
+
+    /// Recovery counts a 2xx answer it cannot decode as a failed request
+    /// (`assertion`), and an error the transport throws as `transient`;
+    /// either could let a case pass for another reason, so each hand-built
+    /// answer must decode as intended, or the test records an issue here
+    /// (throwing would not: recovery catches it).
+    private static func answer(_ body: [UInt8], decodingAs expected: SecretsResponse) throws
+      -> JuiceboxHTTPResponse
+    {
+      let decoded = try? SecretsResponse.decode(body)
+      try #require(decoded == expected)
+      return JuiceboxHTTPResponse(statusCode: 200, body: body)
+    }
+  }
+
+  /// A phase that fails is judged by its own realms' answers, never by
+  /// an earlier phase's error, even one that ranks ahead. See `PhaseScenario`
+  /// for the unlock phase's rule and each case.
+  @Test(arguments: PhaseScenario.allCases.filter { $0.expectedError != nil })
+  func aFailedPhaseIsJudgedByItsOwnAnswers(scenario: PhaseScenario) async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = ScenarioTransport(network: network, scenario: scenario)
+    let expected = try #require(scenario.expectedError)
+    await #expect(throws: expected) {
+      try await recovery.recover(pin: Self.pin, transport: transport)
+    }
+    #expect(await transport.injectedAnswers == scenario.injectedAnswers)
+  }
+
+  /// With one answer that does not agree, recovery still succeeds when the
+  /// other answers reach the threshold. That the unlock phase counts no error
+  /// for a mismatch is checked by `.unlockWithAnErrorAndAMismatch`. In the
+  /// unlock phase, the reference client continues past a mismatch "as there
+  /// may still be enough material from other realms"; in the OPRF phase it
+  /// groups the answers and keeps the group that reaches the threshold.
+  @Test(arguments: PhaseScenario.allCases.filter { $0.expectedError == nil })
+  func aSingleMismatchedAnswerIsSkipped(scenario: PhaseScenario) async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = ScenarioTransport(network: network, scenario: scenario)
+    let secret = try await recovery.recover(pin: Self.pin, transport: transport)
+    #expect(secret == Self.userSecret)
+    #expect(await transport.injectedAnswers == scenario.injectedAnswers)
+  }
+
   /// Answers each phase's requests in the reverse of the realms' order: the
   /// last realm answers first and the first realm answers last. Each request
   /// waits for its turn (for up to five seconds) and records the realm it
@@ -659,6 +977,18 @@ struct RecoveryFlowTests {
     for realm in ["https://realm1.test/", "https://realm3.test/"] {
       #expect(await transport.kinds(sentTo: realm) == ["Recover1", "Recover2", "Recover3"])
     }
+  }
+
+  /// A phase that falls short reports the error that ranks first, in the
+  /// order the documentation of `JuiceboxRecoveryError` lists: `invalidPin`
+  /// (between two, the fewer guesses left), `notRegistered`, `invalidAuth`,
+  /// `upgradeRequired`, `rateLimitExceeded`, `assertion`, `transient`.
+  @Test func errorsRankInTheDocumentedOrder() {
+    let documented: [JuiceboxRecoveryError] = [
+      .invalidPin(guessesRemaining: 0), .invalidPin(guessesRemaining: 3), .notRegistered,
+      .invalidAuth, .upgradeRequired, .rateLimitExceeded, .assertion, .transient,
+    ]
+    #expect(documented.reversed().sorted { $0.sortKey < $1.sortKey } == documented)
   }
 
   @Test func wrongPinReportsGuesses() async throws {
