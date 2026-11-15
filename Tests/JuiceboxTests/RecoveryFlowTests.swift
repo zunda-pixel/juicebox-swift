@@ -455,7 +455,10 @@ struct RecoveryFlowTests {
   /// rank) when more of its realms fail than can be spared, never with an
   /// earlier phase's error. In the unlock phase, a shortfall with no more
   /// errors than can be spared comes from answers whose encrypted-secret
-  /// commitment does not match, and reports `assertion`.
+  /// commitment does not match, and reports `assertion`. In the version and
+  /// OPRF phases, answers that do not agree report `notRegistered` and
+  /// `assertion` when no more realms fail than can be spared, even if the
+  /// failure is transient.
   enum FailingPhase: CaseIterable, Sendable {
     /// The first realm reports no guesses left in the version phase (an
     /// error that ranks ahead), and the second realm's OPRF request fails
@@ -489,13 +492,22 @@ struct RecoveryFlowTests {
     /// spared, so the result is `assertion`, not `transient` (it used to be
     /// `transient`; this package does not retry, #7).
     case unlockWithAServerErrorAndAMismatch
+    /// In the version phase, the first realm fails with a server error and
+    /// the second reports another registration version: one error can be
+    /// spared, but no version has enough realms.
+    case versionWithAServerErrorAndAMismatch
+    /// In the OPRF phase, the first realm fails with a server error and the
+    /// second answers with a wrong unlock key commitment: one error can be
+    /// spared, but no OPRF key has enough realms.
+    case oprfWithAServerErrorAndAMismatch
 
     /// The answers `PhaseFailureTransport` makes up when recovery gets as far
     /// as the scenario.
     var injectedAnswers: Int {
       switch self {
       case .oprf, .unlockAfterAVersionError, .unlockWithAnErrorAndAMismatch,
-        .unlockWithAServerErrorAndAMismatch:
+        .unlockWithAServerErrorAndAMismatch, .versionWithAServerErrorAndAMismatch,
+        .oprfWithAServerErrorAndAMismatch:
         2
       case .unlock, .unlockWithThreeErrors, .unlockWithoutErrors: 3
       }
@@ -506,8 +518,9 @@ struct RecoveryFlowTests {
       case .oprf, .unlock: .transient
       case .unlockWithThreeErrors, .unlockAfterAVersionError: .invalidPin(guessesRemaining: 3)
       case .unlockWithoutErrors, .unlockWithAnErrorAndAMismatch,
-        .unlockWithAServerErrorAndAMismatch:
+        .unlockWithAServerErrorAndAMismatch, .oprfWithAServerErrorAndAMismatch:
         .assertion
+      case .versionWithAServerErrorAndAMismatch: .notRegistered
       }
     }
   }
@@ -525,14 +538,16 @@ struct RecoveryFlowTests {
     }
 
     func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-      if let answer = try injectedAnswer(for: request) {
+      if let answer = try await injectedAnswer(for: request) {
         injectedAnswers += 1
         return answer
       }
       return try await network.send(request)
     }
 
-    private func injectedAnswer(for request: JuiceboxHTTPRequest) throws -> JuiceboxHTTPResponse? {
+    private func injectedAnswer(for request: JuiceboxHTTPRequest) async throws
+      -> JuiceboxHTTPResponse?
+    {
       let value = try decodeCBOR(request.body)
       let isRecover1 = value == .textString("Recover1")
       let isRecover2 = value["Recover2"] != nil
@@ -562,6 +577,12 @@ struct RecoveryFlowTests {
       case .unlockWithAServerErrorAndAMismatch:
         if isRealm1, isRecover3 { return Self.serverError }
         if isRealm2, isRecover3 { return try mismatchedCommitment(for: request) }
+      case .versionWithAServerErrorAndAMismatch:
+        if isRealm1, isRecover1 { return Self.serverError }
+        if isRealm2, isRecover1 { return try Self.otherVersion() }
+      case .oprfWithAServerErrorAndAMismatch:
+        if isRealm1, isRecover2 { return Self.serverError }
+        if isRealm2, isRecover2 { return try await mismatchedUnlockKeyCommitment(for: request) }
       }
       return nil
     }
@@ -572,6 +593,13 @@ struct RecoveryFlowTests {
       try answer(
         CBOR.map(["Recover1": .textString("NoGuesses")]).encode(),
         decodingAs: .recover1(.noGuesses))
+    }
+
+    static func otherVersion() throws -> JuiceboxHTTPResponse {
+      let version = [UInt8](repeating: 6, count: 16)
+      return try answer(
+        RecoveryFlowTests.encodeRecover1Ok(version: version),
+        decodingAs: .recover1(.ok(version: version)))
     }
 
     static func badUnlockKeyTag() throws -> JuiceboxHTTPResponse {
@@ -603,6 +631,46 @@ struct RecoveryFlowTests {
           .ok(
             scalarShare: realm.scalarShare.bytes, encryptedSecret: realm.encryptedSecret,
             commitment: wrongCommitment)))
+    }
+
+    /// The realm's own OPRF answer, but with a wrong unlock key commitment.
+    private func mismatchedUnlockKeyCommitment(for request: JuiceboxHTTPRequest) async throws
+      -> JuiceboxHTTPResponse
+    {
+      let realmAnswer = try await network.send(request)
+      guard
+        case .recover2(
+          .ok(let signed, let blindedResult, let proof, _, let numGuesses, let guessCount)) =
+          try SecretsResponse.decode(realmAnswer.body)
+      else {
+        Issue.record("the realm's own OPRF answer must be Ok")
+        return realmAnswer
+      }
+      let wrongCommitment = [UInt8](repeating: 0, count: 32)
+      return try Self.answer(
+        CBOR.map([
+          "Recover2": .map([
+            "Ok": .map([
+              "oprf_signed_public_key": .map([
+                "public_key": .byteString(signed.publicKey),
+                "verifying_key": .byteString(signed.verifyingKey),
+                "signature": .byteString(signed.signature),
+              ]),
+              "oprf_blinded_result": .byteString(blindedResult),
+              "oprf_proof": .map([
+                "c": .byteString(proof.c),
+                "beta_z": .byteString(proof.betaZ),
+              ]),
+              "unlock_key_commitment": .byteString(wrongCommitment),
+              "num_guesses": .unsignedInt(UInt64(numGuesses)),
+              "guess_count": .unsignedInt(UInt64(guessCount)),
+            ])
+          ])
+        ]).encode(),
+        decodingAs: .recover2(
+          .ok(
+            signedPublicKey: signed, blindedResult: blindedResult, proof: proof,
+            unlockKeyCommitment: wrongCommitment, numGuesses: numGuesses, guessCount: guessCount)))
     }
 
     /// Recovery counts a 2xx answer it cannot decode as a failed request
