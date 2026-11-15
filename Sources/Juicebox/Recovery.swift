@@ -286,7 +286,13 @@ public struct JuiceboxRecovery: Sendable {
         unlockErrors.append(recoveryError(from: error))
       }
     }
-    guard scalarShares.count >= threshold else { throw bestError(unlockErrors) }
+    // As in the reference client (`join_at_least_threshold`): more errors than
+    // the realms that can be spared fail the phase with the best of them.
+    // Otherwise enough realms answered, and a shortfall comes from answers
+    // whose commitment did not match, which is an assertion; the OPRF phase
+    // has already confirmed the PIN, so `invalidPin` would mislead.
+    guard unlockErrors.count <= realms.count - threshold else { throw bestError(unlockErrors) }
+    guard scalarShares.count >= threshold else { throw JuiceboxRecoveryError.assertion }
 
     let bySecret = Dictionary(grouping: scalarShares, by: { $0.encryptedSecret })
     let viableSecrets = bySecret.filter { $0.value.count >= threshold }

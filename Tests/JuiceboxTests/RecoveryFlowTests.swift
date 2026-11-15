@@ -464,12 +464,17 @@ struct RecoveryFlowTests {
     /// other two realms answer the unlock request with a wrong
     /// encrypted-secret commitment, which adds no error.
     case unlockWithoutErrors
+    /// In the unlock phase, the first realm reports a bad unlock key tag,
+    /// the second answers with a wrong encrypted-secret commitment, and the
+    /// third answers correctly: only one error, so enough realms answered,
+    /// and the shortfall comes from the mismatch.
+    case unlockWithAnErrorAndAMismatch
 
     /// The failing phase's own error.
     var expectedError: JuiceboxRecoveryError {
       switch self {
       case .oprf, .unlock: .transient
-      case .unlockWithoutErrors: .assertion
+      case .unlockWithoutErrors, .unlockWithAnErrorAndAMismatch: .assertion
       }
     }
   }
@@ -502,21 +507,49 @@ struct RecoveryFlowTests {
         if isRealm1, value == .textString("Recover1") {
           return Self.noGuesses
         }
-        if isRealm2 || isRealm3, value["Recover3"] != nil, let realm = network.realms[request.url] {
-          return JuiceboxHTTPResponse(
-            statusCode: 200,
-            body: CBOR.map([
-              "Recover3": .map([
-                "Ok": .map([
-                  "encryption_key_scalar_share": .byteString(realm.scalarShare.bytes),
-                  "encrypted_secret": .byteString(realm.encryptedSecret),
-                  "encrypted_secret_commitment": .byteString([UInt8](repeating: 0, count: 16)),
-                ])
-              ])
+        if isRealm2 || isRealm3, value["Recover3"] != nil {
+          return try mismatchedCommitment(for: request)
+        }
+      case .unlockWithAnErrorAndAMismatch:
+        if isRealm1, value["Recover3"] != nil {
+          return try Self.checked(
+            CBOR.map([
+              "Recover3": .map(["BadUnlockKeyTag": .map(["guesses_remaining": .unsignedInt(3)])])
             ]).encode())
+        }
+        if isRealm2, value["Recover3"] != nil {
+          return try mismatchedCommitment(for: request)
         }
       }
       return try await network.send(request)
+    }
+
+    /// The realm's own unlock answer, but with a wrong encrypted-secret
+    /// commitment.
+    private func mismatchedCommitment(for request: JuiceboxHTTPRequest) throws
+      -> JuiceboxHTTPResponse
+    {
+      let realm = try #require(network.realms[request.url])
+      return try Self.checked(
+        CBOR.map([
+          "Recover3": .map([
+            "Ok": .map([
+              "encryption_key_scalar_share": .byteString(realm.scalarShare.bytes),
+              "encrypted_secret": .byteString(realm.encryptedSecret),
+              "encrypted_secret_commitment": .byteString([UInt8](repeating: 0, count: 16)),
+            ])
+          ])
+        ]).encode())
+    }
+
+    /// A hand-built unlock answer, checked to decode as one: if it did not,
+    /// recovery would count it as a failed request, and the test would pass
+    /// or fail for that reason instead.
+    private static func checked(_ body: [UInt8]) throws -> JuiceboxHTTPResponse {
+      guard case .recover3 = try SecretsResponse.decode(body) else {
+        throw JuiceboxRecoveryError.invalidConfiguration
+      }
+      return JuiceboxHTTPResponse(statusCode: 200, body: body)
     }
 
     static let noGuesses = JuiceboxHTTPResponse(
