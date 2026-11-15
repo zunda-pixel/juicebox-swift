@@ -630,6 +630,9 @@ public struct JuiceboxRecovery: Sendable {
     return .transient
   }
 
+  /// The best of a phase's errors. Each caller has more errors than its phase
+  /// can spare (zero or more), so `errors` is never empty; the `assertion`
+  /// fallback only keeps a later caller from crashing.
   private func bestError(_ errors: [JuiceboxRecoveryError]) -> JuiceboxRecoveryError {
     errors.min {
       ($0.sortKey.0, $0.sortKey.1) < ($1.sortKey.0, $1.sortKey.1)
