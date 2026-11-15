@@ -63,10 +63,13 @@ public protocol JuiceboxHTTPTransport: Sendable {
 ///
 /// So the reported case need not be the only reason recovery failed: another
 /// realm may have failed transiently or been rate limited, and a retry with
-/// the same inputs may then succeed, whichever case was reported. After a
-/// wrong PIN, though, the usual source of `invalidPin`, a retry with the same
-/// PIN fails again and uses up another guess (see `invalidPin`). `recover`
-/// itself does not retry a realm (zunda-pixel/juicebox-swift#7).
+/// the same inputs may then succeed, whichever case was reported. Any retry,
+/// even with the right PIN, may use up a guess on a realm the OPRF phase asks
+/// whose unlock does not then succeed (see
+/// ``JuiceboxRecovery/recover(pin:transport:)``), and after a wrong PIN, the
+/// usual source of `invalidPin`, a retry with the same PIN fails again (see
+/// `invalidPin`). `recover` itself does not retry a realm
+/// (zunda-pixel/juicebox-swift#7).
 ///
 /// The descriptions are based on the reference client's (juicebox-sdk)
 /// `RecoverError`, with the differences noted under each case. Unlike the
@@ -83,8 +86,8 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// every realm has guesses left.
   ///
   /// Usually the OPRF phase found the PIN wrong, and another PIN can be
-  /// tried while guesses remain; each attempt with a wrong PIN uses up a
-  /// guess on each realm its OPRF phase asks (see
+  /// tried while guesses remain; an attempt with a wrong PIN may use up a
+  /// guess on the realms its OPRF phase asks (see
   /// ``JuiceboxRecovery/recover(pin:transport:)``). Less often, the PIN may
   /// have been right: this case also comes from a realm's bad unlock key tag
   /// after the OPRF phase has confirmed the PIN (as in the reference client,
