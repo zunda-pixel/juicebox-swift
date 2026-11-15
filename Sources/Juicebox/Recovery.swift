@@ -372,8 +372,8 @@ public struct JuiceboxRecovery: Sendable {
     }
     // As in the reference client (`recover.rs`), answers whose encrypted-secret
     // commitment did not match are skipped without an error, so this phase
-    // can have too few matching answers with few errors (an inconsistency on
-    // the realms' side), which reports an assertion.
+    // can have too few matching answers with no more errors than it can spare
+    // (an inconsistency on the realms' side), which reports an assertion.
     guard unlockErrors.count <= realms.count - threshold else { throw bestError(unlockErrors) }
     guard scalarShares.count >= threshold else { throw JuiceboxRecoveryError.assertion }
 
@@ -631,8 +631,9 @@ public struct JuiceboxRecovery: Sendable {
   }
 
   /// The best of a phase's errors. Each caller has more errors than its phase
-  /// can spare (zero or more), so `errors` is never empty; the `assertion`
-  /// fallback only keeps a later caller from crashing.
+  /// can spare, and a phase can spare zero or more realms (`parse` keeps the
+  /// threshold within the realm count), so `errors` is never empty; the
+  /// `assertion` fallback only keeps a later caller from crashing.
   private func bestError(_ errors: [JuiceboxRecoveryError]) -> JuiceboxRecoveryError {
     errors.min {
       ($0.sortKey.0, $0.sortKey.1) < ($1.sortKey.0, $1.sortKey.1)
