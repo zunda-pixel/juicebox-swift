@@ -61,7 +61,7 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   case invalidConfiguration
 
   /// The reference client's error ordering, used to pick the most specific
-  /// failure when too few realms answer.
+  /// failure when more of a phase's realms fail than it can spare.
   var rank: Int {
     switch self {
     case .invalidPin: return 0

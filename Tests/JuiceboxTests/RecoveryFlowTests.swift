@@ -450,7 +450,7 @@ struct RecoveryFlowTests {
     }
   }
 
-  /// How a phase falls short in `aFailedPhaseReportsItsOwnError`. A phase
+  /// How a phase falls short in `aFailedPhaseIsJudgedByItsOwnAnswers`. A phase
   /// fails with the best of its own errors (`bestError` picks the lowest
   /// rank) when more of its realms fail than can be spared, never with an
   /// earlier phase's error. In the unlock phase, a shortfall with no more
@@ -465,10 +465,17 @@ struct RecoveryFlowTests {
     /// ahead), and the second and third realms' unlock requests fail with a
     /// server error.
     case unlock
-    /// In the unlock phase, the first realm fails with a server error and
-    /// the second reports a bad unlock key tag with 3 guesses left: the best
-    /// of the phase's own errors, which is not the first one.
-    case unlockWithTwoErrors
+    /// In the unlock phase, the first and third realms fail with a server
+    /// error and the second reports a bad unlock key tag with 3 guesses left:
+    /// the best of the phase's own errors, which is neither the first nor the
+    /// last one.
+    case unlockWithThreeErrors
+    /// The first realm reports no guesses left in the version phase, so the
+    /// unlock phase asks two realms and can spare none; the second realm
+    /// reports a bad unlock key tag with 3 guesses left: one error is more
+    /// than the phase's realms can spare (counting all configured realms
+    /// would spare it).
+    case unlockAfterAVersionError
     /// The first realm reports no guesses left in the version phase, and the
     /// other two realms answer the unlock request with a wrong commitment,
     /// which adds no error.
@@ -482,7 +489,7 @@ struct RecoveryFlowTests {
     var expectedError: JuiceboxRecoveryError {
       switch self {
       case .oprf, .unlock: .transient
-      case .unlockWithTwoErrors: .invalidPin(guessesRemaining: 3)
+      case .unlockWithThreeErrors, .unlockAfterAVersionError: .invalidPin(guessesRemaining: 3)
       case .unlockWithoutErrors, .unlockWithAnErrorAndAMismatch: .assertion
       }
     }
@@ -507,8 +514,11 @@ struct RecoveryFlowTests {
       case .unlock:
         if isRealm3, isRecover2 { return JuiceboxHTTPResponse(statusCode: 429, body: []) }
         if isRealm2 || isRealm3, isRecover3 { return Self.serverError }
-      case .unlockWithTwoErrors:
-        if isRealm1, isRecover3 { return Self.serverError }
+      case .unlockWithThreeErrors:
+        if isRealm1 || isRealm3, isRecover3 { return Self.serverError }
+        if isRealm2, isRecover3 { return try Self.badUnlockKeyTag() }
+      case .unlockAfterAVersionError:
+        if isRealm1, isRecover1 { return try Self.noGuesses() }
         if isRealm2, isRecover3 { return try Self.badUnlockKeyTag() }
       case .unlockWithoutErrors:
         if isRealm1, isRecover1 { return try Self.noGuesses() }
@@ -573,11 +583,11 @@ struct RecoveryFlowTests {
     }
   }
 
-  /// A phase that falls short reports its own failure, never an earlier
-  /// phase's error, even one that ranks ahead. See `FailingPhase` for the
-  /// unlock phase's rule and each case.
+  /// A phase that falls short is judged by its own realms' answers, never by
+  /// an earlier phase's error, even one that ranks ahead. See `FailingPhase`
+  /// for the unlock phase's rule and each case.
   @Test(arguments: FailingPhase.allCases)
-  func aFailedPhaseReportsItsOwnError(failingPhase: FailingPhase) async throws {
+  func aFailedPhaseIsJudgedByItsOwnAnswers(failingPhase: FailingPhase) async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
     let transport = PhaseFailureTransport(network: network, failingPhase: failingPhase)
