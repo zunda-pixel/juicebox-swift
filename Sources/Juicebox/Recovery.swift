@@ -68,7 +68,7 @@ public protocol JuiceboxHTTPTransport: Sendable {
 /// whose unlock does not then succeed (see
 /// ``JuiceboxRecovery/recover(pin:transport:)``), and after a wrong PIN, the
 /// usual source of `invalidPin`, a retry with the same PIN fails again (see
-/// `invalidPin`). `recover` itself does not retry a realm
+/// ``JuiceboxRecoveryError/invalidPin(guessesRemaining:)``). `recover` itself does not retry a realm
 /// (zunda-pixel/juicebox-swift#7).
 ///
 /// The descriptions are based on the reference client's (juicebox-sdk)
@@ -204,6 +204,13 @@ public struct JuiceboxRecovery: Sendable {
     guard juiceboxSodiumIsReady else { throw JuiceboxRecoveryError.assertion }
     let threshold = configuration.recoverThreshold
 
+    // Each phase keeps its own errors, as the reference client joins each
+    // phase anew: a phase never reports an earlier phase's error. In the
+    // version and OPRF phases every realm either answers or adds an error, so
+    // too few answers there means more errors than the phase can spare, the
+    // reference client's condition (the unlock phase also skips mismatched
+    // answers, so it counts its errors instead).
+
     // Phase 1: every realm reports the registration version.
     var versions: [(version: [UInt8], realm: JuiceboxRealm)] = []
     var versionErrors: [JuiceboxRecoveryError] = []
@@ -242,8 +249,6 @@ public struct JuiceboxRecovery: Sendable {
       mode: configuration.pinHashingMode)
     let (blindingFactor, blindedInput) = OPRF.start(input: accessKey)
 
-    // Each phase keeps its own errors, as the reference client joins each
-    // phase anew: a phase never reports an earlier phase's error.
     var oprfErrors: [JuiceboxRecoveryError] = []
     var pointShares:
       [(
