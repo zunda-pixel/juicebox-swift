@@ -53,24 +53,25 @@ public protocol JuiceboxHTTPTransport: Sendable {
 /// cases (between two `invalidPin`s, the fewer guesses left). Other failures
 /// report a fixed case, such as a wrong PIN, realms that disagree, too few
 /// matching answers in the unlock phase, or a secret that does not decrypt.
-/// Since `recover` does not retry a realm (#7), a case that ranks ahead of
-/// `transient` can be reported when another realm's transient failure is
-/// what left the phase short; then a retry may succeed. The descriptions
-/// follow the reference client's `RecoverError`.
+/// The reported case need not be what left the phase short: another realm's
+/// failure that ranks behind it may have been. Since `recover` does not
+/// retry a realm (zunda-pixel/juicebox-swift#7), a retry may then succeed if
+/// that failure was transient or a rate limit. The descriptions follow the
+/// reference client's `RecoverError`.
 public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// The secret could not be unlocked. Another PIN can be tried while
   /// guesses remain (`guessesRemaining`; `recover` always gives a value).
   /// Zero means at least one realm reported no guesses left; that alone
-  /// does not mean the secret is locked, as another realm's transient
-  /// failure may be what left the phase short (see above). In the unlock
+  /// does not mean the secret is locked, as another realm's failure may be
+  /// what left the phase short (see `JuiceboxRecoveryError`). In the unlock
   /// phase this can also come from a realm's bad unlock key tag after the
   /// OPRF phase has confirmed the PIN, as in the reference client.
   case invalidPin(guessesRemaining: Int?)
   /// The secret is not registered, or not fully registered, with the realms.
-  /// Since `recover` does not retry a realm (#7), this is also reported when
-  /// no more realms fail than the version phase can spare, all of them
-  /// transiently, and too few of the others agree on a version; then a retry
-  /// may succeed.
+  /// Since `recover` does not retry a realm (zunda-pixel/juicebox-swift#7),
+  /// this is also reported when at least one realm fails transiently in the
+  /// version phase, no more fail than it can spare, and too few of the
+  /// others agree on a version; then a retry may succeed.
   case notRegistered
   /// A realm rejected the authentication token, or no token was given for
   /// a realm.
@@ -81,19 +82,22 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   case rateLimitExceeded
   /// A software error or an inconsistency on the realms' side (such as an
   /// answer that does not verify). Retrying with the same inputs is not
-  /// expected to help, except that `recover` does not retry a realm (#7):
-  /// besides ranking ahead of another realm's transient failure (see above),
-  /// an assertion is reported when no more of a phase's realms fail than it
-  /// can spare, all of them transiently, and the answers it did get do not
-  /// agree (OPRF or encrypted-secret answers that differ, or an unlock
-  /// answer whose commitment does not match); then a retry may succeed.
+  /// expected to help, except that `recover` does not retry a realm
+  /// (zunda-pixel/juicebox-swift#7): besides ranking ahead of another
+  /// realm's failure (see `JuiceboxRecoveryError`), an assertion is reported
+  /// when at least one of a phase's realms fails transiently, no more fail
+  /// than it can spare, and the answers it did get do not agree (OPRF or
+  /// encrypted-secret answers that differ, or an unlock answer whose
+  /// commitment does not match); then a retry may succeed.
   case assertion
   /// A failure in sending a request or receiving its answer: a non-2xx
   /// status other than 401, 426 and 429 whose body is not a realm answer,
   /// a hardware realm's unavailable error or its missing-session or session
-  /// error (#8; the reference client reports these two as an assertion on a
-  /// new session, which `recover` always opens), or any error the transport
-  /// throws. Retrying with the same inputs may succeed.
+  /// error (zunda-pixel/juicebox-swift#8; the reference client reports these
+  /// two as an assertion on a new session, which `recover` always opens), any
+  /// error the transport throws, or the answer to a request whose own task
+  /// was cancelled while the caller's was not. Retrying with the same inputs
+  /// may succeed.
   case transient
   /// Not reported by `recover`: a configuration that cannot be used fails
   /// earlier, in `JuiceboxConfiguration.parse` (`JuiceboxConfigurationError`).
