@@ -456,9 +456,9 @@ struct RecoveryFlowTests {
   /// earlier phase's error. In the unlock phase, a shortfall with no more
   /// errors than can be spared comes from answers whose encrypted-secret
   /// commitment does not match, and reports `assertion`. In the version and
-  /// OPRF phases, answers that do not agree report `notRegistered` and
-  /// `assertion` when no more realms fail than can be spared, even if the
-  /// failure is transient.
+  /// OPRF phases, when no more realms fail than can be spared but too few
+  /// answers agree to reach the threshold, the phase reports `notRegistered`
+  /// and `assertion`, even if the failure is transient.
   enum FailingPhase: CaseIterable, Sendable {
     /// The first realm reports no guesses left in the version phase (an
     /// error that ranks ahead), and the second realm's OPRF request fails
@@ -500,6 +500,11 @@ struct RecoveryFlowTests {
     /// second answers with a wrong unlock key commitment: one error can be
     /// spared, but no OPRF key has enough realms.
     case oprfWithAServerErrorAndAMismatch
+    /// The same with a rate limit instead of the server error: if the made-up
+    /// OPRF answer failed to verify, the phase would have two errors and
+    /// report the better one, `rateLimitExceeded`, so `assertion` shows that
+    /// the answer verified and was set apart by its commitment.
+    case oprfWithARateLimitAndAMismatch
 
     /// The answers `PhaseFailureTransport` makes up when recovery gets as far
     /// as the scenario.
@@ -507,7 +512,7 @@ struct RecoveryFlowTests {
       switch self {
       case .oprf, .unlockAfterAVersionError, .unlockWithAnErrorAndAMismatch,
         .unlockWithAServerErrorAndAMismatch, .versionWithAServerErrorAndAMismatch,
-        .oprfWithAServerErrorAndAMismatch:
+        .oprfWithAServerErrorAndAMismatch, .oprfWithARateLimitAndAMismatch:
         2
       case .unlock, .unlockWithThreeErrors, .unlockWithoutErrors: 3
       }
@@ -518,7 +523,8 @@ struct RecoveryFlowTests {
       case .oprf, .unlock: .transient
       case .unlockWithThreeErrors, .unlockAfterAVersionError: .invalidPin(guessesRemaining: 3)
       case .unlockWithoutErrors, .unlockWithAnErrorAndAMismatch,
-        .unlockWithAServerErrorAndAMismatch, .oprfWithAServerErrorAndAMismatch:
+        .unlockWithAServerErrorAndAMismatch, .oprfWithAServerErrorAndAMismatch,
+        .oprfWithARateLimitAndAMismatch:
         .assertion
       case .versionWithAServerErrorAndAMismatch: .notRegistered
       }
@@ -582,6 +588,9 @@ struct RecoveryFlowTests {
         if isRealm2, isRecover1 { return try Self.otherVersion() }
       case .oprfWithAServerErrorAndAMismatch:
         if isRealm1, isRecover2 { return Self.serverError }
+        if isRealm2, isRecover2 { return try await mismatchedUnlockKeyCommitment(for: request) }
+      case .oprfWithARateLimitAndAMismatch:
+        if isRealm1, isRecover2 { return JuiceboxHTTPResponse(statusCode: 429, body: []) }
         if isRealm2, isRecover2 { return try await mismatchedUnlockKeyCommitment(for: request) }
       }
       return nil
