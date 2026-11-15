@@ -84,17 +84,19 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   ///
   /// Usually the OPRF phase found the PIN wrong, and another PIN can be
   /// tried while guesses remain; each attempt with a wrong PIN uses up a
-  /// guess on each realm its OPRF phase asks (see `recover`). Less often,
-  /// the PIN may have been right: this case also comes from a realm's bad
-  /// unlock key tag after the OPRF phase has confirmed the PIN (as in the
-  /// reference client), or from a realm with no guesses left. The same PIN
-  /// may then succeed on a retry if another realm's failure is what left the
+  /// guess on each realm its OPRF phase asks (see
+  /// ``JuiceboxRecovery/recover(pin:transport:)``). Less often, the PIN may
+  /// have been right: this case also comes from a realm's bad unlock key tag
+  /// after the OPRF phase has confirmed the PIN (as in the reference client,
+  /// juicebox-sdk), or from a realm with no guesses left. The same PIN may
+  /// then succeed on a retry if another realm's failure is what left the
   /// phase short (see ``JuiceboxRecoveryError``). Unlike the reference
   /// client's description, zero alone does not mean the secret is locked:
   /// other realms may still have guesses.
   case invalidPin(guessesRemaining: Int?)
   /// The secret is not registered, or not fully registered, with the realms,
-  /// or no registration version has answers from enough realms (see
+  /// or the realms that answered disagree on the registration version, so
+  /// that no version has answers from enough of them (see
   /// ``JuiceboxRecoveryError`` for when a retry may help).
   case notRegistered
   /// A realm rejected the authentication token, or no token was given for
@@ -120,10 +122,10 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// This covers a non-2xx status other than 401, 426 and 429 whose body is
   /// not a realm answer, a hardware realm's unavailable error or its
   /// missing-session or session error (zunda-pixel/juicebox-swift#8; the
-  /// reference client reports these two as an assertion on a new session,
-  /// which `recover` always opens), any error the transport throws, and the
-  /// answer to a request whose own task was cancelled while the caller's was
-  /// not. Retrying with the same inputs may succeed.
+  /// reference client, juicebox-sdk, reports these two as an assertion on a
+  /// new session, which `recover` always opens), any error the transport
+  /// throws, and the answer to a request whose own task was cancelled while
+  /// the caller's was not. Retrying with the same inputs may succeed.
   case transient
   /// Not reported by `recover`: a configuration that cannot be used fails
   /// earlier, in `JuiceboxConfiguration.parse` (`JuiceboxConfigurationError`).
