@@ -48,17 +48,21 @@ public protocol JuiceboxHTTPTransport: Sendable {
   func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse
 }
 
-/// Why recovery failed. When a phase falls short, `recover` reports the best
-/// of that phase's errors, in the order of these cases (`rank`). The
-/// descriptions follow the reference client's `RecoverError`.
+/// Why recovery failed. When more of a phase's realms fail than it can spare,
+/// `recover` reports the best of that phase's errors, in the order of these
+/// cases (between two `invalidPin`s, the fewer guesses left). Other failures
+/// report a fixed case (a wrong PIN, realms that disagree, or too few
+/// matching answers in the unlock phase). The descriptions follow the
+/// reference client's `RecoverError`.
 public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// The secret could not be unlocked. Another PIN can be tried while
-  /// guesses remain (`guessesRemaining`, when the realms report it); with
-  /// none left, the secret is locked.
+  /// guesses remain (`guessesRemaining`, when the realms report it). Zero
+  /// means at least one realm reported no guesses left.
   case invalidPin(guessesRemaining: Int?)
   /// The secret is not registered, or not fully registered, with the realms.
   case notRegistered
-  /// A realm rejected the authentication token.
+  /// A realm rejected the authentication token, or no token was given for
+  /// a realm.
   case invalidAuth
   /// A realm requires a newer client.
   case upgradeRequired
@@ -66,10 +70,13 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   case rateLimitExceeded
   /// A software error or an inconsistency on the realms' side (such as an
   /// answer that does not verify). Retrying with the same inputs is not
-  /// expected to help.
+  /// expected to help, except that `recover` does not retry a realm (#7):
+  /// in the unlock phase, an assertion can coincide with another realm's
+  /// transient failure, and then a retry may succeed.
   case assertion
-  /// A failure in sending a request or receiving its answer. Retrying with
-  /// the same inputs may succeed.
+  /// A failure in sending a request or receiving its answer, including an
+  /// HTTP status other than 401, 426 and 429 and any error the transport
+  /// throws. Retrying with the same inputs may succeed.
   case transient
   /// Not reported by `recover`: a configuration that cannot be used fails
   /// earlier, in `JuiceboxConfiguration.parse` (`JuiceboxConfigurationError`).
