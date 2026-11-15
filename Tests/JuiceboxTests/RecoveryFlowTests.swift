@@ -6,7 +6,9 @@ import Testing
 @testable import Juicebox
 
 /// Drives the full three-phase recovery against fake realms that hold Shamir
-/// shares of the OPRF key and the user-secret scalar.
+/// shares of the OPRF key and the user-secret scalar. A "PIN request" is a
+/// request of the OPRF or unlock phase (Recover2 or Recover3), which follow
+/// the PIN hashing.
 struct RecoveryFlowTests {
   init() throws {
     try #require(juiceboxSodiumIsReady)
@@ -151,8 +153,9 @@ struct RecoveryFlowTests {
 
   // MARK: Setup
 
-  /// Builds fake realms that hold shares of `userSecret` registered under
-  /// `pin`, and the configuration and tokens for them.
+  /// Builds fake realms that hold shares of `Self.userSecret` registered
+  /// under `pin` (or the PIN that `pinHash` is of), and the configuration and
+  /// tokens for them.
   ///
   /// Without `pinHash`, the setup hashes `pin` with `Self.version`, `mode`,
   /// and an empty `userInfo`, so the test must give `JuiceboxRecovery` the
@@ -247,6 +250,9 @@ struct RecoveryFlowTests {
     let network: FakeNetwork
     let mode: Mode
     private(set) var unlockRequests = 0
+    /// The first realm's PIN requests that failed (`cancelsOneRealm`) or
+    /// cancelled their own task (`oneRealmCancelsItsOwnTask`).
+    private(set) var firstRealmCancellations = 0
 
     init(network: FakeNetwork, mode: Mode) {
       self.network = network
@@ -271,9 +277,11 @@ struct RecoveryFlowTests {
         guard request.url.hasPrefix("https://realm1.") else {
           return try await network.send(request)
         }
+        firstRealmCancellations += 1
         throw CancellationError()
       case .oneRealmCancelsItsOwnTask:
         if request.url.hasPrefix("https://realm1.") {
+          firstRealmCancellations += 1
           unsafe withUnsafeCurrentTask { unsafe $0?.cancel() }
         }
         return try await network.send(request)
@@ -393,7 +401,7 @@ struct RecoveryFlowTests {
     }
   }
 
-  /// When the caller cancels recovery during the PIN phase, recovery stops
+  /// When the caller cancels recovery during the OPRF phase, recovery stops
   /// before the unlock phase, even if the transport answers anyway. Anywhere
   /// from one realm to all of them get a PIN request: a phase asks each realm
   /// once and recovery never reaches the unlock phase, while a request
@@ -414,7 +422,8 @@ struct RecoveryFlowTests {
   }
 
   /// A cancellation the transport reports while the caller has not cancelled
-  /// (an invalidated session, a cancelled redirect, a cancelled request task)
+  /// (an invalidated session, a cancelled authentication challenge, a
+  /// cancelled request task)
   /// is a failure of that realm, not the caller's cancellation: recovery
   /// fails with a recovery error, and the other realms can still answer.
   @Test func aTransportCancellationIsARealmFailure() async throws {
@@ -434,6 +443,8 @@ struct RecoveryFlowTests {
       let oneRealm = CancellingTransport(network: network, mode: mode)
       let secret = try await recovery.recover(pin: Self.pin, transport: oneRealm)
       #expect(secret == Self.userSecret)
+      // The first realm did take the failing path.
+      #expect(await oneRealm.firstRealmCancellations > 0)
     }
   }
 

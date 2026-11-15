@@ -40,6 +40,10 @@ public struct JuiceboxHTTPResponse: Sendable {
 /// An error `send` throws, including `CancellationError` or a cancelled
 /// `URLError`, is a failure of that realm unless the caller cancelled
 /// recovery; the other realms can still answer.
+///
+/// Each phase waits for all of its requests, so recovery stops promptly when
+/// the caller cancels only if `send` responds to its task's cancellation (as
+/// `URLSession`'s async methods do).
 public protocol JuiceboxHTTPTransport: Sendable {
   func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse
 }
@@ -480,7 +484,8 @@ public struct JuiceboxRecovery: Sendable {
     } catch {
       // Recovery stops only when the caller cancelled it. A transport may
       // also report a cancellation for its own reasons (an invalidated
-      // session, a cancelled redirect); that is a failure of this realm, so
+      // session, a cancelled authentication challenge); that is a failure of
+      // this realm, so
       // the other realms can still answer, and the caller does not mistake a
       // real failure for its own cancellation. This only checks the request's
       // own task; the phase decides whether the caller cancelled.
