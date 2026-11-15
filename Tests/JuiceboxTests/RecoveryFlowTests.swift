@@ -1010,6 +1010,18 @@ struct RecoveryFlowTests {
     }
   }
 
+  /// A wrong PIN reports the fewest guesses left among the realms whose OPRF
+  /// answers agreed, not the first realm's.
+  @Test func wrongPinReportsTheFewestGuesses() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    var realms = network.realms.values.sorted { $0.url < $1.url }
+    realms[1].guessCount = 3
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    await #expect(throws: JuiceboxRecoveryError.invalidPin(guessesRemaining: 2)) {
+      try await recovery.recover(pin: Array("0000".utf8), transport: FakeNetwork(realms: realms))
+    }
+  }
+
   @Test func missingTokenIsInvalidAuth() async throws {
     let (network, configuration, _) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: [:])

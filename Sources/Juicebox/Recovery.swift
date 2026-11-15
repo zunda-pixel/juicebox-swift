@@ -72,11 +72,10 @@ public protocol JuiceboxHTTPTransport: Sendable {
 public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// The secret could not be unlocked.
   ///
-  /// `guessesRemaining` comes from the answers that decided the failure
-  /// (`recover` always gives a value): for a wrong PIN, the fewest among the
-  /// realms whose OPRF answers agreed; when a phase falls short, the fewest
-  /// among that phase's `invalidPin`s. A value above zero does not mean that
-  /// every realm has guesses left.
+  /// `guessesRemaining` comes from the answers that decided the failure: for
+  /// a wrong PIN, the fewest among the realms whose OPRF answers agreed; when
+  /// a phase falls short, the fewest among that phase's `invalidPin`s. A
+  /// value above zero does not mean that every realm has guesses left.
   ///
   /// Usually the OPRF phase found the PIN wrong, and another PIN can be
   /// tried while guesses remain; an attempt with a wrong PIN may use up a
@@ -89,7 +88,7 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// phase short (see ``JuiceboxRecoveryError``). Unlike the reference
   /// client's description, zero alone does not mean the secret is locked:
   /// other realms may still have guesses.
-  case invalidPin(guessesRemaining: Int?)
+  case invalidPin(guessesRemaining: Int)
   /// The secret is not registered, or not fully registered, with the realms,
   /// or enough realms answered but disagree on the registration version, so
   /// that no version has answers from enough of them (see
@@ -142,7 +141,7 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
 
   var sortKey: (Int, Int) {
     switch self {
-    case .invalidPin(let guesses): return (rank, guesses ?? Int.min)
+    case .invalidPin(let guesses): return (rank, guesses)
     default: return (rank, 0)
     }
   }
@@ -314,7 +313,9 @@ public struct JuiceboxRecovery: Sendable {
     let (unlockKey, commitment) = JuiceboxKeys.unlockKeyAndCommitment(oprfOutput: oprfOutput)
     guard constantTimeEquals(commitment, pointGroup[0].commitment) else {
       throw JuiceboxRecoveryError.invalidPin(
-        guessesRemaining: pointGroup.map { $0.guessesRemaining }.min())
+        guessesRemaining: pointGroup.reduce(pointGroup[0].guessesRemaining) {
+          min($0, $1.guessesRemaining)
+        })
     }
 
     // Phase 3: exchange the unlock key tag for each realm's scalar share,
