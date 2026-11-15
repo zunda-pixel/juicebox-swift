@@ -30,6 +30,20 @@ public struct JuiceboxHTTPResponse: Sendable {
   }
 }
 
+/// Performs the realm requests recovery asks for. Recovery calls `send`
+/// concurrently: each phase asks all of its realms at once, so an
+/// implementation must not assume one request at a time. Within one
+/// recovery, a realm has at most one request in flight; for a hardware
+/// realm, the OPRF and unlock phases (Recover2 and Recover3) call `send`
+/// twice in turn (the Noise handshake, then the request).
+///
+/// An error `send` throws, including `CancellationError` or a cancelled
+/// `URLError`, is a failure of that realm unless the caller cancelled
+/// recovery; the other realms can still answer.
+///
+/// Each phase waits for all of its requests, so recovery stops promptly when
+/// the caller cancels only if `send` responds to its task's cancellation (as
+/// `URLSession`'s async methods do).
 public protocol JuiceboxHTTPTransport: Sendable {
   func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse
 }
@@ -94,6 +108,19 @@ public struct JuiceboxRecovery: Sendable {
   }
 
   /// Recovers the user secret with PIN hashing off the caller's actor.
+  ///
+  /// Throws `CancellationError` only when the caller cancelled recovery.
+  /// Otherwise a failure is a `JuiceboxRecoveryError`.
+  ///
+  /// A realm counts a guess when the OPRF phase (Recover2) asks it, and
+  /// clears the count only when the unlock phase (Recover3) succeeds there,
+  /// so cancelling once the OPRF phase has started may leave a guess used on
+  /// each realm it asked. The phase asks all of its realms at once, so that
+  /// can be every realm that reported the chosen version.
+  ///
+  /// A cancellation that arrives while the PIN is being hashed (Standard2019
+  /// takes seconds) takes effect once the hashing ends, before the OPRF
+  /// phase.
   @concurrent
   public func recover(
     pin: [UInt8], transport: any JuiceboxHTTPTransport
@@ -105,12 +132,11 @@ public struct JuiceboxRecovery: Sendable {
     // Phase 1: every realm reports the registration version.
     var versions: [(version: [UInt8], realm: JuiceboxRealm)] = []
     var errors: [JuiceboxRecoveryError] = []
-    for realm in configuration.realms {
+    let phase1 = try await requestEach(
+      configuration.realms, transport: transport, request: .recover1)
+    for (realm, outcome) in zip(configuration.realms, phase1) {
       do {
-        guard
-          case .recover1(let response) = try await request(
-            .recover1, realm: realm, transport: transport)
-        else {
+        guard case .recover1(let response) = try outcome.get() else {
           errors.append(.assertion)
           continue
         }
@@ -119,8 +145,6 @@ public struct JuiceboxRecovery: Sendable {
         case .notRegistered: errors.append(.notRegistered)
         case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
         }
-      } catch is CancellationError {
-        throw CancellationError()
       } catch {
         try Task.checkCancellation()
         errors.append(recoveryError(from: error))
@@ -148,12 +172,12 @@ public struct JuiceboxRecovery: Sendable {
         share: SecretShare<RistrettoPoint>, commitment: [UInt8],
         verifyingKey: [UInt8], guessesRemaining: Int
       )] = []
-    for realm in realms {
+    let phase2 = try await requestEach(
+      realms, transport: transport,
+      request: .recover2(version: version, blindedInput: blindedInput.compressed))
+    for (realm, outcome) in zip(realms, phase2) {
       do {
-        let response = try await request(
-          .recover2(version: version, blindedInput: blindedInput.compressed),
-          realm: realm, transport: transport)
-        guard case .recover2(let recover2) = response else {
+        guard case .recover2(let recover2) = try outcome.get() else {
           errors.append(.assertion)
           continue
         }
@@ -184,8 +208,6 @@ public struct JuiceboxRecovery: Sendable {
         case .notRegistered: errors.append(.notRegistered)
         case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
         }
-      } catch is CancellationError {
-        throw CancellationError()
       } catch {
         try Task.checkCancellation()
         errors.append(recoveryError(from: error))
@@ -221,13 +243,14 @@ public struct JuiceboxRecovery: Sendable {
     // Phase 3: exchange the unlock key tag for each realm's scalar share,
     // then decrypt the user secret.
     var scalarShares: [(share: SecretShare<RistrettoScalar>, encryptedSecret: [UInt8])] = []
-    for realm in realms {
-      let tag = JuiceboxKeys.unlockKeyTag(unlockKey: unlockKey, realmId: realm.id)
+    let phase3 = try await requestEach(realms, transport: transport) { realm in
+      .recover3(
+        version: version,
+        unlockKeyTag: JuiceboxKeys.unlockKeyTag(unlockKey: unlockKey, realmId: realm.id))
+    }
+    for (realm, outcome) in zip(realms, phase3) {
       do {
-        let response = try await request(
-          .recover3(version: version, unlockKeyTag: tag), realm: realm,
-          transport: transport)
-        guard case .recover3(let recover3) = response else {
+        guard case .recover3(let recover3) = try outcome.get() else {
           errors.append(.assertion)
           continue
         }
@@ -253,8 +276,6 @@ public struct JuiceboxRecovery: Sendable {
           errors.append(.invalidPin(guessesRemaining: Int(guesses)))
         case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
         }
-      } catch is CancellationError {
-        throw CancellationError()
       } catch {
         try Task.checkCancellation()
         errors.append(recoveryError(from: error))
@@ -285,6 +306,56 @@ public struct JuiceboxRecovery: Sendable {
   }
 
   // MARK: Realm requests
+
+  /// Sends the same request to each of `realms` at once; see the overload
+  /// below.
+  private func requestEach(
+    _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
+    request: SecretsRequest
+  ) async throws -> [Result<SecretsResponse, any Error>] {
+    try await requestEach(realms, transport: transport) { _ in request }
+  }
+
+  /// Sends one request to each of `realms` at once and returns each outcome
+  /// in the realms' order, so a phase checks the answers in the same order
+  /// however they arrive. A phase then takes as long as its slowest realm
+  /// instead of the sum of all of them, which matters when several realms
+  /// are slow or unresponsive. Every request is awaited; the reference client
+  /// also returns early once too many realms have failed, which this does
+  /// not do. A failed request is a failed outcome. The phase checks whether
+  /// the caller cancelled recovery and throws `CancellationError` only then;
+  /// any other failure, including a cancellation the transport reports, is
+  /// a failure of that realm.
+  private func requestEach(
+    _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
+    makeRequest: (JuiceboxRealm) -> SecretsRequest
+  ) async throws -> [Result<SecretsResponse, any Error>] {
+    try Task.checkCancellation()
+    let requests = realms.map(makeRequest)
+    return await withTaskGroup(of: (Int, Result<SecretsResponse, any Error>).self) { group in
+      for (index, (realm, secretsRequest)) in zip(realms, requests).enumerated() {
+        group.addTask {
+          do {
+            return (
+              index, .success(try await request(secretsRequest, realm: realm, transport: transport))
+            )
+          } catch {
+            return (index, .failure(error))
+          }
+        }
+      }
+      // The group waits for every child, so every slot is filled. A missing
+      // one is a bug in this function, not a cancellation, so stop there.
+      var outcomes = [Result<SecretsResponse, any Error>?](repeating: nil, count: realms.count)
+      for await (index, outcome) in group {
+        outcomes[index] = outcome
+      }
+      return outcomes.map { outcome in
+        guard let outcome else { preconditionFailure("a realm request returned no outcome") }
+        return outcome
+      }
+    }
+  }
 
   private func request(
     _ request: SecretsRequest, realm: JuiceboxRealm,
@@ -416,11 +487,14 @@ public struct JuiceboxRecovery: Sendable {
     let response: JuiceboxHTTPResponse
     do {
       response = try await transport.send(request)
-    } catch is CancellationError {
-      throw CancellationError()
-    } catch let error as URLError where error.code == .cancelled {
-      throw CancellationError()
     } catch {
+      // Recovery stops only when the caller cancelled it. A transport may
+      // also report a cancellation for its own reasons (an invalidated
+      // session, a cancelled authentication challenge); that is a failure of
+      // this realm, so the other realms can still answer, and the caller does
+      // not mistake a real failure for its own cancellation. This only checks
+      // the request's own task; the phase decides whether the caller
+      // cancelled.
       try Task.checkCancellation()
       throw JuiceboxRecoveryError.transient
     }

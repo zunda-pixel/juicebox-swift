@@ -3,6 +3,17 @@ import Testing
 
 @testable import Juicebox
 
+/// The reference implementation's PIN vector (`pin.rs`), hashed with
+/// Standard2019. Recovery tests use it to skip hashing during their setup.
+enum PinHashVector {
+  static let pin = Array("1234".utf8)
+  static let registrationVersion = [UInt8](repeating: 5, count: 16)
+  static let userInfo = Array("artemis".utf8)
+  static let accessKey = "2935da84c97423b37f3457231b877ce6ac2093501d7255dbee1deb09a5d8821b"
+  static let encryptionKeySeed =
+    "87c8c9b5d3ea9fea83b6ac6a64e25b97c4722ca4e40bea2523efea262125e22a"
+}
+
 /// BLAKE2s against RFC 7693, and the Noise NK client against the official
 /// Noise test vectors (`Noise_NK_25519_ChaChaPoly_BLAKE2s`).
 struct JuiceboxTests {
@@ -36,18 +47,13 @@ struct JuiceboxTests {
         == Blake2s.hash([]))
   }
 
-  /// The reference implementation's PIN vector (`pin.rs`): PIN "1234",
-  /// registration version `[5; 16]`, user info "artemis".
   @Test func juiceboxPinHashVector() throws {
     let (accessKey, seed) = try juiceboxPinHash(
-      pin: Array("1234".utf8),
-      registrationVersion: [UInt8](repeating: 5, count: 16),
-      userInfo: Array("artemis".utf8))
-    #expect(
-      Self.hexString(accessKey)
-        == "2935da84c97423b37f3457231b877ce6ac2093501d7255dbee1deb09a5d8821b")
-    #expect(
-      Self.hexString(seed) == "87c8c9b5d3ea9fea83b6ac6a64e25b97c4722ca4e40bea2523efea262125e22a")
+      pin: PinHashVector.pin,
+      registrationVersion: PinHashVector.registrationVersion,
+      userInfo: PinHashVector.userInfo)
+    #expect(Self.hexString(accessKey) == PinHashVector.accessKey)
+    #expect(Self.hexString(seed) == PinHashVector.encryptionKeySeed)
   }
 
   // MARK: Noise

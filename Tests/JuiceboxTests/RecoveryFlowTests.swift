@@ -6,7 +6,9 @@ import Testing
 @testable import Juicebox
 
 /// Drives the full three-phase recovery against fake realms that hold Shamir
-/// shares of the OPRF key and the user-secret scalar.
+/// shares of the OPRF key and the user-secret scalar. A "PIN request" is a
+/// request of the OPRF or unlock phase (Recover2 or Recover3), which follow
+/// the PIN hashing.
 struct RecoveryFlowTests {
   init() throws {
     try #require(juiceboxSodiumIsReady)
@@ -38,7 +40,7 @@ struct RecoveryFlowTests {
     var guessCount: UInt16
   }
 
-  final class FakeNetwork: JuiceboxHTTPTransport, @unchecked Sendable {
+  final class FakeNetwork: JuiceboxHTTPTransport, Sendable {
     let realms: [String: FakeRealm]
     init(realms: [FakeRealm]) {
       self.realms = Dictionary(uniqueKeysWithValues: realms.map { ($0.url, $0) })
@@ -151,8 +153,22 @@ struct RecoveryFlowTests {
 
   // MARK: Setup
 
+  /// Builds fake realms that hold shares of `Self.userSecret` registered
+  /// under `pin` (or the PIN that `pinHash` is of), and the configuration and
+  /// tokens for them.
+  ///
+  /// Without `pinHash`, the setup hashes `pin` with `Self.version`, `mode`,
+  /// and an empty `userInfo`, so the test must give `JuiceboxRecovery` the
+  /// default (empty) `userInfo`.
+  ///
+  /// - Parameter pinHash: The PIN's hash, when it is already known, so the
+  ///   setup does not hash the PIN itself (Standard2019 takes seconds).
+  ///   `pin` is then unused. The hash must be of the PIN that the test
+  ///   recovers with, `Self.version`, `mode`, and the `userInfo` the test
+  ///   gives `JuiceboxRecovery`.
   func makeNetwork(
-    pin: [UInt8] = RecoveryFlowTests.pin
+    pin: [UInt8] = RecoveryFlowTests.pin, mode: JuiceboxPinHashingMode = .fastInsecure,
+    pinHash: (accessKey: [UInt8], encryptionKeySeed: [UInt8])? = nil
   ) throws -> (FakeNetwork, JuiceboxConfiguration, [String: String]) {
     let realmIds = (0..<Self.realmCount).map { index in
       [UInt8](repeating: UInt8(index + 1), count: 16)
@@ -160,8 +176,8 @@ struct RecoveryFlowTests {
     let tokens = Dictionary(
       uniqueKeysWithValues: realmIds.map { (hexString($0), "token-\(hexString($0))") })
 
-    let (accessKey, seed) = try juiceboxPinHash(
-      pin: pin, registrationVersion: Self.version, mode: .fastInsecure)
+    let (accessKey, seed) =
+      try pinHash ?? juiceboxPinHash(pin: pin, registrationVersion: Self.version, mode: mode)
     let masterOPRF = RistrettoScalar.random()
     let oprfShares = createShares(
       secret: masterOPRF, threshold: Self.threshold, count: Self.realmCount,
@@ -205,7 +221,7 @@ struct RecoveryFlowTests {
         ],
         "register_threshold": 3,
         "recover_threshold": 2,
-        "pin_hashing_mode": "FastInsecure"
+        "pin_hashing_mode": "\(mode.rawValue)"
       }
       """
     let configuration = try! JuiceboxConfiguration.parse(Array(json.utf8))
@@ -213,15 +229,30 @@ struct RecoveryFlowTests {
   }
 
   private actor CancellingTransport: JuiceboxHTTPTransport {
-    enum Mode: CaseIterable {
+    enum Mode {
+      /// Every PIN request throws `CancellationError` without the caller
+      /// having cancelled.
       case throwsCancellation
+      /// Every PIN request throws `URLError(.cancelled)` without the caller
+      /// having cancelled.
       case throwsURLCancellation
-      case returnsAfterCancellation
+      /// Every PIN request cancels only the task that sends it, which the
+      /// caller did not cancel, and then answers.
+      case cancelsItsOwnTaskThenAnswers
+      /// Only the first realm's PIN requests throw `CancellationError`; the
+      /// other realms answer.
+      case cancelsOneRealm
+      /// Only the first realm's PIN requests cancel their own task and then
+      /// answer; the other realms answer normally.
+      case oneRealmCancelsItsOwnTask
     }
 
     let network: FakeNetwork
     let mode: Mode
-    private(set) var pinRequests = 0
+    private(set) var unlockRequests = 0
+    /// The first realm's PIN requests that failed (`cancelsOneRealm`) or
+    /// cancelled their own task (`oneRealmCancelsItsOwnTask`).
+    private(set) var firstRealmCancellations = 0
 
     init(network: FakeNetwork, mode: Mode) {
       self.network = network
@@ -229,17 +260,30 @@ struct RecoveryFlowTests {
     }
 
     func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-      if try decodeCBOR(request.body) == .textString("Recover1") {
+      let value = try decodeCBOR(request.body)
+      if value == .textString("Recover1") {
         return try await network.send(request)
       }
-      pinRequests += 1
+      if value["Recover3"] != nil { unlockRequests += 1 }
       switch mode {
       case .throwsCancellation:
         throw CancellationError()
       case .throwsURLCancellation:
         throw URLError(.cancelled)
-      case .returnsAfterCancellation:
+      case .cancelsItsOwnTaskThenAnswers:
         unsafe withUnsafeCurrentTask { unsafe $0?.cancel() }
+        return try await network.send(request)
+      case .cancelsOneRealm:
+        guard request.url.hasPrefix("https://realm1.") else {
+          return try await network.send(request)
+        }
+        firstRealmCancellations += 1
+        throw CancellationError()
+      case .oneRealmCancelsItsOwnTask:
+        if request.url.hasPrefix("https://realm1.") {
+          firstRealmCancellations += 1
+          unsafe withUnsafeCurrentTask { unsafe $0?.cancel() }
+        }
         return try await network.send(request)
       }
     }
@@ -268,8 +312,10 @@ struct RecoveryFlowTests {
       }
     }
 
+    /// The transport is called off the main actor even when recovery is
+    /// started from it.
     @MainActor
-    @Test func recoveryLeavesMainActor() async throws {
+    @Test func transportIsCalledOffTheMainActor() async throws {
       let (network, configuration, tokens) = try makeNetwork()
       let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
       let secret = try await recovery.recover(
@@ -278,24 +324,302 @@ struct RecoveryFlowTests {
     }
   #endif
 
-  @Test func cancellationStopsBeforeTheNextPINRequest() async throws {
-    let (network, configuration, tokens) = try makeNetwork()
-    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-    for mode in CancellingTransport.Mode.allCases {
-      let transport = CancellingTransport(network: network, mode: mode)
-      let task = Task { [pin = Self.pin] in
-        try await recovery.recover(pin: pin, transport: transport)
+  /// Recovery started from the main actor runs its PIN hashing (Argon2 with
+  /// the real Standard2019 parameters, about a second or more) off the main
+  /// actor, so the main actor keeps running. The transport is called from
+  /// child tasks, so only the main actor's own progress shows where
+  /// `recover` itself runs.
+  @MainActor
+  @Test(.timeLimit(.minutes(1)))
+  func recoveryLeavesTheMainActorFree() async throws {
+    // The reference vector has this test's PIN and version, so only
+    // `recover` hashes the PIN.
+    try #require(
+      Self.pin == PinHashVector.pin && Self.version == PinHashVector.registrationVersion)
+    let (network, configuration, tokens) = try makeNetwork(
+      mode: .standard2019,
+      pinHash: (
+        try #require(hexBytes(PinHashVector.accessKey)),
+        try #require(hexBytes(PinHashVector.encryptionKeySeed))
+      ))
+    let recovery = JuiceboxRecovery(
+      configuration: configuration, tokens: tokens, userInfo: PinHashVector.userInfo)
+    // Measure from before the ticker first runs, so a stall before its
+    // first tick (when `recover` hashes before giving up the main actor)
+    // also counts.
+    let started = ContinuousClock.now
+    let ticker = Task { @MainActor in
+      var longestGap = Duration.zero
+      var last = started
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .milliseconds(10))
+        let now = ContinuousClock.now
+        longestGap = max(longestGap, now - last)
+        last = now
       }
-      do {
-        _ = try await task.value
-        Issue.record("expected cancellation")
-      } catch is CancellationError {
-        let requests = await transport.pinRequests
-        #expect(requests == 1)
+      return longestGap
+    }
+    // Stop the ticker even when `recover` throws, so it does not keep
+    // waking the main actor during the other tests.
+    defer { ticker.cancel() }
+    let secret = try await recovery.recover(pin: Self.pin, transport: network)
+    let elapsed = ContinuousClock.now - started
+    ticker.cancel()
+    let longestGap = await ticker.value
+    #expect(secret == Self.userSecret)
+    // The main actor must not stall for anything close to the hashing time.
+    #expect(longestGap < elapsed / 2)
+  }
+
+  /// Cancels the caller's task when it receives a PIN request, and then
+  /// answers anyway, as a transport that ignores cancellation does.
+  private actor CallerCancellingTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    private var caller: Task<[UInt8], any Error>?
+    private(set) var pinRequests = 0
+    private(set) var unlockRequests = 0
+
+    init(network: FakeNetwork) {
+      self.network = network
+    }
+
+    func setCaller(_ task: Task<[UInt8], any Error>) {
+      caller = task
+    }
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      let value = try decodeCBOR(request.body)
+      if value == .textString("Recover1") {
+        return try await network.send(request)
       }
+      pinRequests += 1
+      if value["Recover3"] != nil { unlockRequests += 1 }
+      // The test sets the caller right after starting it.
+      while caller == nil { await Task.yield() }
+      caller?.cancel()
+      return try await network.send(request)
     }
   }
 
+  /// When the caller cancels recovery during the OPRF phase, recovery stops
+  /// before the unlock phase, even if the transport answers anyway. Anywhere
+  /// from one realm to all of them get a PIN request: a phase asks each realm
+  /// once and recovery never reaches the unlock phase, while a request
+  /// whose task sees the cancellation before calling the transport is not
+  /// sent.
+  @Test(.timeLimit(.minutes(1)))
+  func theCallersCancellationStopsRecoveryBeforeTheNextPhase() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = CallerCancellingTransport(network: network)
+    let task = Task { [pin = Self.pin] in
+      try await recovery.recover(pin: pin, transport: transport)
+    }
+    await transport.setCaller(task)
+    await #expect(throws: CancellationError.self) { try await task.value }
+    #expect((1...Self.realmCount).contains(await transport.pinRequests))
+    #expect(await transport.unlockRequests == 0)
+  }
+
+  /// A cancellation the transport reports while the caller has not cancelled
+  /// (an invalidated session, a cancelled authentication challenge, a
+  /// cancelled request task) is a failure of that realm, not the caller's
+  /// cancellation: recovery fails with a recovery error, and the other realms
+  /// can still answer.
+  @Test func aTransportCancellationIsARealmFailure() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    for mode in [
+      CancellingTransport.Mode.throwsCancellation, .throwsURLCancellation,
+      .cancelsItsOwnTaskThenAnswers,
+    ] {
+      let transport = CancellingTransport(network: network, mode: mode)
+      await #expect(throws: JuiceboxRecoveryError.transient) {
+        try await recovery.recover(pin: Self.pin, transport: transport)
+      }
+      #expect(await transport.unlockRequests == 0)
+    }
+    for mode in [CancellingTransport.Mode.cancelsOneRealm, .oneRealmCancelsItsOwnTask] {
+      let oneRealm = CancellingTransport(network: network, mode: mode)
+      let secret = try await recovery.recover(pin: Self.pin, transport: oneRealm)
+      #expect(secret == Self.userSecret)
+      // The first realm's requests did take the cancelling path. That
+      // recovery drops an answer whose task was cancelled is checked by
+      // `cancelsItsOwnTaskThenAnswers` above.
+      #expect(await oneRealm.firstRealmCancellations > 0)
+    }
+  }
+
+  /// Answers each phase's requests in the reverse of the realms' order: the
+  /// last realm answers first and the first realm answers last. Each request
+  /// waits for its turn (for up to five seconds) and records the realm it
+  /// answered for. Recovery must still pair every answer with its realm.
+  private actor ReversingTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    private(set) var answered: [Int] = []
+
+    init(network: FakeNetwork) {
+      self.network = network
+    }
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      let realmCount = RecoveryFlowTests.realmCount
+      let realmNumber = request.url.first(where: \.isNumber).flatMap { Int(String($0)) } ?? 0
+      let deadline = ContinuousClock.now + .seconds(5)
+      while answered.count % realmCount != realmCount - realmNumber, ContinuousClock.now < deadline
+      {
+        try await Task.sleep(for: .milliseconds(1))
+      }
+      answered.append(realmNumber)
+      return try await network.send(request)
+    }
+  }
+
+  @Test(.timeLimit(.minutes(1)))
+  func answersInReverseOrderArePairedWithTheirRealms() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = ReversingTransport(network: network)
+    let secret = try await recovery.recover(pin: Self.pin, transport: transport)
+    #expect(secret == Self.userSecret)
+    // Three phases, each answered from the last realm to the first.
+    #expect(await transport.answered == [3, 2, 1, 3, 2, 1, 3, 2, 1])
+  }
+
+  /// Holds each request for up to five seconds until the other realms of its
+  /// phase have been asked too, and records how many were in flight at once.
+  /// Every phase here asks all realms, so the requests arrive in batches of
+  /// `realmCount`. When the realms are contacted one at a time, all but the
+  /// last request of each batch wait out the five seconds alone, so the test
+  /// fails (in about 30 seconds) instead of hanging.
+  private actor GatheringTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    private var arrivals = 0
+    private var inFlight = 0
+    private(set) var mostInFlight = 0
+
+    init(network: FakeNetwork) {
+      self.network = network
+    }
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      let batchSize = RecoveryFlowTests.realmCount
+      arrivals += 1
+      let batchEnd = (arrivals + batchSize - 1) / batchSize * batchSize
+      inFlight += 1
+      defer { inFlight -= 1 }
+      mostInFlight = max(mostInFlight, inFlight)
+      let deadline = ContinuousClock.now + .seconds(5)
+      while arrivals < batchEnd, ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(5))
+      }
+      return try await network.send(request)
+    }
+  }
+
+  @Test(.timeLimit(.minutes(1)))
+  func realmsAreContactedTogether() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = GatheringTransport(network: network)
+    let secret = try await recovery.recover(pin: Self.pin, transport: transport)
+    #expect(secret == Self.userSecret)
+    #expect(await transport.mostInFlight == Self.realmCount)
+  }
+
+  /// Answers the registration version at once and holds every PIN request
+  /// until the request is cancelled.
+  private actor HoldingTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    private(set) var pinRequests = 0
+    private(set) var unlockRequests = 0
+
+    init(network: FakeNetwork) {
+      self.network = network
+    }
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      let value = try decodeCBOR(request.body)
+      if value == .textString("Recover1") {
+        return try await network.send(request)
+      }
+      pinRequests += 1
+      if value["Recover3"] != nil { unlockRequests += 1 }
+      try await Task.sleep(for: .seconds(30))
+      return try await network.send(request)
+    }
+  }
+
+  /// Cancelling the caller's task while the PIN requests are in flight
+  /// cancels those requests and ends recovery at once, before the unlock
+  /// phase.
+  @Test(.timeLimit(.minutes(1)))
+  func cancellingTheCallerStopsTheRequestsInFlight() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = HoldingTransport(network: network)
+    let task = Task { [pin = Self.pin] in
+      try await recovery.recover(pin: pin, transport: transport)
+    }
+    // Recovery may end before any PIN request (for example, if the first
+    // phase fails); give up instead of waiting forever.
+    let deadline = ContinuousClock.now + .seconds(10)
+    while await transport.pinRequests == 0 {
+      guard ContinuousClock.now < deadline else {
+        task.cancel()
+        do {
+          _ = try await task.value
+          Issue.record("no PIN request was sent, and recovery succeeded")
+        } catch {
+          Issue.record("no PIN request was sent: \(error)")
+        }
+        return
+      }
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    let cancelled = ContinuousClock.now
+    task.cancel()
+    await #expect(throws: CancellationError.self) { try await task.value }
+    #expect(ContinuousClock.now - cancelled < .seconds(10))
+    #expect(await transport.pinRequests <= Self.realmCount)
+    #expect(await transport.unlockRequests == 0)
+  }
+
+  /// Records the kind of each request and the URL it went to, and passes
+  /// the request on. The realm at `otherVersionPrefix`, if any, reports a
+  /// different registration version in phase 1.
+  private actor RecordingTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    let otherVersionPrefix: String?
+    private(set) var requests: [(url: String, kind: String)] = []
+
+    init(network: FakeNetwork, otherVersionPrefix: String? = nil) {
+      self.network = network
+      self.otherVersionPrefix = otherVersionPrefix
+    }
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      let value = try decodeCBOR(request.body)
+      let kind =
+        value == .textString("Recover1")
+        ? "Recover1"
+        : ["Recover2", "Recover3"].first { value[$0] != nil } ?? "other"
+      requests.append((request.url, kind))
+      if kind == "Recover1", let otherVersionPrefix, request.url.hasPrefix(otherVersionPrefix) {
+        return JuiceboxHTTPResponse(
+          statusCode: 200,
+          body: RecoveryFlowTests.encodeRecover1Ok(version: [UInt8](repeating: 6, count: 16)))
+      }
+      return try await network.send(request)
+    }
+
+    func kinds(sentTo prefix: String) -> [String] {
+      requests.filter { $0.url.hasPrefix(prefix) }.map(\.kind)
+    }
+  }
+
+  /// With one realm down, recovery succeeds with the others, and the OPRF
+  /// and unlock phases ask only the realms that reported the chosen version.
   @Test func recoverWithOneRealmDown() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     // Drop the second realm by pointing it at an unreachable address.
@@ -313,8 +637,28 @@ struct RecoveryFlowTests {
       """
     let degraded = try JuiceboxConfiguration.parse(Array(json.utf8))
     let recovery = JuiceboxRecovery(configuration: degraded, tokens: tokens)
-    let secret = try await recovery.recover(pin: Self.pin, transport: network)
+    let transport = RecordingTransport(network: network)
+    let secret = try await recovery.recover(pin: Self.pin, transport: transport)
     #expect(secret == Self.userSecret)
+    #expect(await transport.kinds(sentTo: "https://down.test/") == ["Recover1"])
+    for realm in ["https://realm1.test/", "https://realm3.test/"] {
+      #expect(await transport.kinds(sentTo: realm) == ["Recover1", "Recover2", "Recover3"])
+    }
+  }
+
+  /// A realm that reports another registration version is not asked in the
+  /// OPRF and unlock phases; the realms with the chosen version recover.
+  @Test func aRealmWithAnotherVersionIsNotAskedLater() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = RecordingTransport(
+      network: network, otherVersionPrefix: "https://realm2.test/")
+    let secret = try await recovery.recover(pin: Self.pin, transport: transport)
+    #expect(secret == Self.userSecret)
+    #expect(await transport.kinds(sentTo: "https://realm2.test/") == ["Recover1"])
+    for realm in ["https://realm1.test/", "https://realm3.test/"] {
+      #expect(await transport.kinds(sentTo: realm) == ["Recover1", "Recover2", "Recover3"])
+    }
   }
 
   @Test func wrongPinReportsGuesses() async throws {
