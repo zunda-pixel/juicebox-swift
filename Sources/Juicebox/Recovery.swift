@@ -118,9 +118,8 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// agree (on the OPRF verifying key and unlock key commitment, or on an
   /// encrypted secret whose commitment matches). Retrying with the same
   /// inputs is not expected to help, except in the cases described under
-  /// ``JuiceboxRecoveryError``. Unlike the reference client's description,
-  /// which rules out a retry with the same parameters, a retry may succeed in
-  /// those cases.
+  /// ``JuiceboxRecoveryError``, unlike the reference client's description,
+  /// which rules out a retry with the same parameters.
   case assertion
   /// A failure in sending a request or receiving its answer.
   ///
@@ -210,11 +209,10 @@ public struct JuiceboxRecovery: Sendable {
     // phase anew: a phase never reports an earlier phase's error. As in the
     // reference client (`join_at_least_threshold`), more errors than the
     // phase's realms can spare fail the phase with the best of them (of all
-    // of them, since every answer is awaited; see `requestEach`). Otherwise
-    // enough realms answered, and a phase can still fall short only by
-    // skipping answers without an error (an inconsistency on the realms'
-    // side), which the reference client reports as an assertion. Every phase
-    // checks both, rather than relying on which answers it skips today.
+    // of them, since every answer is awaited; see `requestEach`). Each phase
+    // counts its errors rather than its answers, so an answer skipped without
+    // an error never turns into a spared error: too few usable answers end in
+    // the phase's check that enough of them agree.
 
     // Phase 1: every realm reports the registration version.
     var versions: [(version: [UInt8], realm: JuiceboxRealm)] = []
@@ -240,7 +238,6 @@ public struct JuiceboxRecovery: Sendable {
     guard versionErrors.count <= configuration.realms.count - threshold else {
       throw bestError(versionErrors)
     }
-    guard versions.count >= threshold else { throw JuiceboxRecoveryError.assertion }
 
     let byVersion = Dictionary(grouping: versions, by: { $0.version })
     let viableVersions = byVersion.filter { $0.value.count >= threshold }
@@ -305,7 +302,6 @@ public struct JuiceboxRecovery: Sendable {
       }
     }
     guard oprfErrors.count <= realms.count - threshold else { throw bestError(oprfErrors) }
-    guard pointShares.count >= threshold else { throw JuiceboxRecoveryError.assertion }
 
     let byKey = Dictionary(
       grouping: pointShares,
@@ -374,9 +370,10 @@ public struct JuiceboxRecovery: Sendable {
         unlockErrors.append(recoveryError(from: error))
       }
     }
-    // Answers whose encrypted-secret commitment did not match are skipped
-    // without an error, so this phase can fall short with few errors (see the
-    // phases' rule above).
+    // As in the reference client (`recover.rs`), answers whose encrypted-secret
+    // commitment did not match are skipped without an error, so this phase
+    // can have too few matching answers with few errors (an inconsistency on
+    // the realms' side), which reports an assertion.
     guard unlockErrors.count <= realms.count - threshold else { throw bestError(unlockErrors) }
     guard scalarShares.count >= threshold else { throw JuiceboxRecoveryError.assertion }
 
