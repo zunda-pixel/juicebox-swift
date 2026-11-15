@@ -158,7 +158,7 @@ struct HardwareRecoveryTests {
     var noiseStaticSecret: Curve25519.KeyAgreement.PrivateKey?
   }
 
-  private final class FakeNetwork: JuiceboxHTTPTransport, @unchecked Sendable {
+  private final class FakeNetwork: JuiceboxHTTPTransport, Sendable {
     let realms: [String: RealmFixture]
     let signer: Curve25519.Signing.PrivateKey
     /// Recovery sends a phase's requests to the realms concurrently, so the
@@ -228,11 +228,15 @@ struct HardwareRecoveryTests {
       guard
         let transportCiphertext = encrypted["Transport"]?["ciphertext"]?
           .bytes,
-        let responseCiphertext = try sessions.withLock({ sessions -> [UInt8]? in
-          guard let transport = sessions[UInt32(sessionId)] else { return nil }
-          let plaintext = try transport.open(transportCiphertext)
-          let inner = try response(for: realm, request: decodeCBOR(plaintext))
-          return try transport.seal(paddedEnvelope(inner))
+        let plaintext = try sessions.withLock({ stored -> [UInt8]? in
+          try stored[UInt32(sessionId)]?.open(transportCiphertext)
+        })
+      else { return JuiceboxHTTPResponse(statusCode: 400, body: []) }
+      // The realm's work runs outside the lock, so the realms answer concurrently.
+      let inner = try response(for: realm, request: decodeCBOR(plaintext))
+      guard
+        let responseCiphertext = try sessions.withLock({ stored -> [UInt8]? in
+          try stored[UInt32(sessionId)]?.seal(paddedEnvelope(inner))
         })
       else { return JuiceboxHTTPResponse(statusCode: 400, body: []) }
       return JuiceboxHTTPResponse(

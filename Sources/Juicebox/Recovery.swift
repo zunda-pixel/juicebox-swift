@@ -33,6 +33,10 @@ public struct JuiceboxHTTPResponse: Sendable {
 /// Performs the realm requests recovery asks for. Recovery calls `send`
 /// concurrently: each phase sends one request to every realm at once, so an
 /// implementation must not assume one request at a time.
+///
+/// An error `send` throws, including `CancellationError` or a cancelled
+/// `URLError`, is a failure of that realm unless the caller cancelled
+/// recovery; the other realms can still answer.
 public protocol JuiceboxHTTPTransport: Sendable {
   func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse
 }
@@ -97,6 +101,9 @@ public struct JuiceboxRecovery: Sendable {
   }
 
   /// Recovers the user secret with PIN hashing off the caller's actor.
+  ///
+  /// Throws `CancellationError` only when the caller cancelled recovery.
+  /// Otherwise a failure is a `JuiceboxRecoveryError`.
   @concurrent
   public func recover(
     pin: [UInt8], transport: any JuiceboxHTTPTransport
@@ -121,8 +128,6 @@ public struct JuiceboxRecovery: Sendable {
         case .notRegistered: errors.append(.notRegistered)
         case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
         }
-      } catch is CancellationError {
-        throw CancellationError()
       } catch {
         try Task.checkCancellation()
         errors.append(recoveryError(from: error))
@@ -186,8 +191,6 @@ public struct JuiceboxRecovery: Sendable {
         case .notRegistered: errors.append(.notRegistered)
         case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
         }
-      } catch is CancellationError {
-        throw CancellationError()
       } catch {
         try Task.checkCancellation()
         errors.append(recoveryError(from: error))
@@ -256,8 +259,6 @@ public struct JuiceboxRecovery: Sendable {
           errors.append(.invalidPin(guessesRemaining: Int(guesses)))
         case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
         }
-      } catch is CancellationError {
-        throw CancellationError()
       } catch {
         try Task.checkCancellation()
         errors.append(recoveryError(from: error))
@@ -303,8 +304,10 @@ public struct JuiceboxRecovery: Sendable {
   /// the sum of all of them, which matters when several realms are slow or
   /// unresponsive. Every request is awaited; the reference client also
   /// returns early once too many realms have failed, which this does not do.
-  /// A cancellation reaches the caller as a failed outcome, which the phase
-  /// turns into `CancellationError`.
+  /// A failed request is a failed outcome. The phase checks whether the caller
+  /// cancelled recovery and throws `CancellationError` only then; any other
+  /// failure, including a cancellation the transport reports, is a failure
+  /// of that realm.
   private func requestEach(
     _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
     makeRequest: (JuiceboxRealm) -> SecretsRequest

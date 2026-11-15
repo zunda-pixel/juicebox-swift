@@ -213,16 +213,16 @@ struct RecoveryFlowTests {
   }
 
   private actor CancellingTransport: JuiceboxHTTPTransport {
-    enum Mode: CaseIterable {
+    enum Mode {
       /// Every PIN request throws `CancellationError` without the caller
       /// having cancelled.
       case throwsCancellation
       /// Every PIN request throws `URLError(.cancelled)` without the caller
       /// having cancelled.
       case throwsURLCancellation
-      /// Every PIN request cancels the task that sends it, as a cancelled
-      /// caller does, and then answers.
-      case returnsAfterCancellation
+      /// Every PIN request cancels only the task that sends it, which the
+      /// caller did not cancel, and then answers.
+      case cancelsItsOwnTaskThenAnswers
       /// Only the first realm's PIN requests throw `CancellationError`; the
       /// other realms answer.
       case cancelsOneRealm
@@ -250,7 +250,7 @@ struct RecoveryFlowTests {
         throw CancellationError()
       case .throwsURLCancellation:
         throw URLError(.cancelled)
-      case .returnsAfterCancellation:
+      case .cancelsItsOwnTaskThenAnswers:
         unsafe withUnsafeCurrentTask { unsafe $0?.cancel() }
         return try await network.send(request)
       case .cancelsOneRealm:
@@ -295,28 +295,66 @@ struct RecoveryFlowTests {
     }
   #endif
 
-  /// When the task sending a PIN request is cancelled, as a cancelled caller
-  /// cancels it, recovery stops before the unlock phase. The PIN requests of
-  /// a phase go to every realm together, so every realm has been asked once.
-  @Test func aCancelledRequestStopsRecoveryBeforeTheNextPhase() async throws {
+  /// Cancels the caller's task when it receives a PIN request, and then
+  /// answers anyway, as a transport that ignores cancellation does.
+  private actor CallerCancellingTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    private var caller: Task<[UInt8], any Error>?
+    private(set) var pinRequests = 0
+    private(set) var unlockRequests = 0
+
+    init(network: FakeNetwork) {
+      self.network = network
+    }
+
+    func setCaller(_ task: Task<[UInt8], any Error>) {
+      caller = task
+    }
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      let value = try decodeCBOR(request.body)
+      if value == .textString("Recover1") {
+        return try await network.send(request)
+      }
+      pinRequests += 1
+      if value["Recover3"] != nil { unlockRequests += 1 }
+      // The test sets the caller right after starting it.
+      while caller == nil { await Task.yield() }
+      caller?.cancel()
+      return try await network.send(request)
+    }
+  }
+
+  /// When the caller cancels recovery during the PIN phase, recovery stops
+  /// before the unlock phase, even if the transport answers anyway. The PIN
+  /// requests of a phase start together, but a request that has not reached
+  /// the transport when the caller cancels is not sent, so each realm is
+  /// asked at most once.
+  @Test(.timeLimit(.minutes(1)))
+  func theCallersCancellationStopsRecoveryBeforeTheNextPhase() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-    let transport = CancellingTransport(network: network, mode: .returnsAfterCancellation)
-    await #expect(throws: CancellationError.self) {
-      try await recovery.recover(pin: Self.pin, transport: transport)
+    let transport = CallerCancellingTransport(network: network)
+    let task = Task { [pin = Self.pin] in
+      try await recovery.recover(pin: pin, transport: transport)
     }
-    #expect(await transport.pinRequests == Self.realmCount)
+    await transport.setCaller(task)
+    await #expect(throws: CancellationError.self) { try await task.value }
+    #expect((1...Self.realmCount).contains(await transport.pinRequests))
     #expect(await transport.unlockRequests == 0)
   }
 
   /// A cancellation the transport reports while the caller has not cancelled
-  /// (an invalidated session, a cancelled redirect) is a failure of that
-  /// realm, not the caller's cancellation: recovery fails with a recovery
-  /// error, and the other realms can still answer.
+  /// (an invalidated session, a cancelled redirect, a cancelled request task)
+  /// is a failure of that realm, not the caller's cancellation: recovery
+  /// fails with a recovery error, and the other realms can still answer.
   @Test func aTransportCancellationIsARealmFailure() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-    for mode in [CancellingTransport.Mode.throwsCancellation, .throwsURLCancellation] {
+    for mode in [
+      CancellingTransport.Mode.throwsCancellation, .throwsURLCancellation,
+      .cancelsItsOwnTaskThenAnswers,
+    ] {
       let transport = CancellingTransport(network: network, mode: mode)
       await #expect(throws: JuiceboxRecoveryError.transient) {
         try await recovery.recover(pin: Self.pin, transport: transport)
@@ -436,7 +474,6 @@ struct RecoveryFlowTests {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
     let transport = HoldingTransport(network: network)
-    let started = ContinuousClock.now
     let task = Task { [pin = Self.pin] in
       try await recovery.recover(pin: pin, transport: transport)
     }
@@ -456,9 +493,10 @@ struct RecoveryFlowTests {
       }
       try await Task.sleep(for: .milliseconds(5))
     }
+    let cancelled = ContinuousClock.now
     task.cancel()
     await #expect(throws: CancellationError.self) { try await task.value }
-    #expect(ContinuousClock.now - started < .seconds(10))
+    #expect(ContinuousClock.now - cancelled < .seconds(10))
     #expect(await transport.pinRequests <= Self.realmCount)
     #expect(await transport.unlockRequests == 0)
   }
