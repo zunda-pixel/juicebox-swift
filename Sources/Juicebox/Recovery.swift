@@ -68,8 +68,8 @@ public protocol JuiceboxHTTPTransport: Sendable {
 /// whose unlock does not then succeed (see
 /// ``JuiceboxRecovery/recover(pin:transport:)``), and after a wrong PIN, the
 /// usual source of `invalidPin`, a retry with the same PIN fails again (see
-/// ``JuiceboxRecoveryError/invalidPin(guessesRemaining:)``). `recover` itself does not retry a realm
-/// (zunda-pixel/juicebox-swift#7).
+/// ``JuiceboxRecoveryError/invalidPin(guessesRemaining:)``). `recover`
+/// itself does not retry a realm (zunda-pixel/juicebox-swift#7).
 ///
 /// The descriptions are based on the reference client's (juicebox-sdk)
 /// `RecoverError`, with the differences noted under each case. Unlike the
