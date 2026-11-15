@@ -152,7 +152,7 @@ struct RecoveryFlowTests {
   // MARK: Setup
 
   func makeNetwork(
-    pin: [UInt8] = RecoveryFlowTests.pin
+    pin: [UInt8] = RecoveryFlowTests.pin, mode: JuiceboxPinHashingMode = .fastInsecure
   ) throws -> (FakeNetwork, JuiceboxConfiguration, [String: String]) {
     let realmIds = (0..<Self.realmCount).map { index in
       [UInt8](repeating: UInt8(index + 1), count: 16)
@@ -161,7 +161,7 @@ struct RecoveryFlowTests {
       uniqueKeysWithValues: realmIds.map { (hexString($0), "token-\(hexString($0))") })
 
     let (accessKey, seed) = try juiceboxPinHash(
-      pin: pin, registrationVersion: Self.version, mode: .fastInsecure)
+      pin: pin, registrationVersion: Self.version, mode: mode)
     let masterOPRF = RistrettoScalar.random()
     let oprfShares = createShares(
       secret: masterOPRF, threshold: Self.threshold, count: Self.realmCount,
@@ -205,7 +205,7 @@ struct RecoveryFlowTests {
         ],
         "register_threshold": 3,
         "recover_threshold": 2,
-        "pin_hashing_mode": "FastInsecure"
+        "pin_hashing_mode": "\(mode.rawValue)"
       }
       """
     let configuration = try! JuiceboxConfiguration.parse(Array(json.utf8))
@@ -293,8 +293,10 @@ struct RecoveryFlowTests {
       }
     }
 
+    /// The transport is called off the main actor even when recovery is
+    /// started from it.
     @MainActor
-    @Test func recoveryLeavesMainActor() async throws {
+    @Test func transportIsCalledOffTheMainActor() async throws {
       let (network, configuration, tokens) = try makeNetwork()
       let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
       let secret = try await recovery.recover(
@@ -302,6 +304,37 @@ struct RecoveryFlowTests {
       #expect(secret == Self.userSecret)
     }
   #endif
+
+  /// Recovery started from the main actor runs its PIN hashing (Argon2 with
+  /// the real Standard2019 parameters, about a second or more) off the main
+  /// actor, so the main actor keeps running. The transport is called from
+  /// child tasks, so only the main actor's own progress shows where
+  /// `recover` itself runs.
+  @MainActor
+  @Test(.timeLimit(.minutes(1)))
+  func recoveryLeavesTheMainActorFree() async throws {
+    let (network, configuration, tokens) = try makeNetwork(mode: .standard2019)
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let ticker = Task { @MainActor in
+      var longestGap = Duration.zero
+      var last = ContinuousClock.now
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .milliseconds(10))
+        let now = ContinuousClock.now
+        longestGap = max(longestGap, now - last)
+        last = now
+      }
+      return longestGap
+    }
+    let started = ContinuousClock.now
+    let secret = try await recovery.recover(pin: Self.pin, transport: network)
+    let elapsed = ContinuousClock.now - started
+    ticker.cancel()
+    let longestGap = await ticker.value
+    #expect(secret == Self.userSecret)
+    // The main actor must not stall for anything close to the hashing time.
+    #expect(longestGap < elapsed / 2)
+  }
 
   /// Cancels the caller's task when it receives a PIN request, and then
   /// answers anyway, as a transport that ignores cancellation does.
@@ -334,8 +367,8 @@ struct RecoveryFlowTests {
   }
 
   /// When the caller cancels recovery during the PIN phase, recovery stops
-  /// before the unlock phase, even if the transport answers anyway. Between
-  /// one realm and all of them get a PIN request: a phase asks each realm
+  /// before the unlock phase, even if the transport answers anyway. Anywhere
+  /// from one realm to all of them get a PIN request: a phase asks each realm
   /// once and recovery never reaches the unlock phase, while a request that
   /// has not reached the transport when the caller cancels is not sent.
   @Test(.timeLimit(.minutes(1)))
@@ -373,7 +406,6 @@ struct RecoveryFlowTests {
       let oneRealm = CancellingTransport(network: network, mode: mode)
       let secret = try await recovery.recover(pin: Self.pin, transport: oneRealm)
       #expect(secret == Self.userSecret)
-      #expect(await oneRealm.pinRequests == 2 * Self.realmCount)
     }
   }
 

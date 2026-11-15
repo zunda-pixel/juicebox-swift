@@ -32,8 +32,9 @@ public struct JuiceboxHTTPResponse: Sendable {
 
 /// Performs the realm requests recovery asks for. Recovery calls `send`
 /// concurrently: each phase asks every realm at once, so an implementation
-/// must not assume one request at a time. A realm has at most one request in
-/// flight; a hardware realm's PIN phases call `send` twice in turn (the Noise
+/// must not assume one request at a time. Within one recovery, a realm has
+/// at most one request in flight; for a hardware realm, the OPRF and unlock
+/// phases (Recover2 and Recover3) call `send` twice in turn (the Noise
 /// handshake, then the request).
 ///
 /// An error `send` throws, including `CancellationError` or a cancelled
@@ -107,8 +108,9 @@ public struct JuiceboxRecovery: Sendable {
   /// Throws `CancellationError` only when the caller cancelled recovery.
   /// Otherwise a failure is a `JuiceboxRecoveryError`.
   ///
-  /// Each phase asks every realm at once, so cancelling during the PIN phase
-  /// may still use a guess on each realm that the phase already asked.
+  /// Each phase asks every realm at once, so cancelling during the OPRF phase
+  /// (Recover2, which uses a guess) may still use a guess on each realm that
+  /// the phase already asked.
   @concurrent
   public func recover(
     pin: [UInt8], transport: any JuiceboxHTTPTransport
