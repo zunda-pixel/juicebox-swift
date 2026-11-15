@@ -51,13 +51,15 @@ public protocol JuiceboxHTTPTransport: Sendable {
 /// Why recovery failed. When more of a phase's realms fail than it can spare,
 /// `recover` reports the best of that phase's errors, in the order of these
 /// cases (between two `invalidPin`s, the fewer guesses left). Other failures
-/// report a fixed case (a wrong PIN, realms that disagree, or too few
-/// matching answers in the unlock phase). The descriptions follow the
-/// reference client's `RecoverError`.
+/// report a fixed case, such as a wrong PIN, realms that disagree, too few
+/// matching answers in the unlock phase, or a secret that does not decrypt.
+/// The descriptions follow the reference client's `RecoverError`.
 public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// The secret could not be unlocked. Another PIN can be tried while
-  /// guesses remain (`guessesRemaining`, when the realms report it). Zero
-  /// means at least one realm reported no guesses left.
+  /// guesses remain (`guessesRemaining`; `recover` always gives a value).
+  /// Zero means at least one realm reported no guesses left. In the unlock
+  /// phase this can also come from a realm's bad unlock key tag after the
+  /// OPRF phase has confirmed the PIN, as in the reference client.
   case invalidPin(guessesRemaining: Int?)
   /// The secret is not registered, or not fully registered, with the realms.
   case notRegistered
@@ -71,12 +73,16 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// A software error or an inconsistency on the realms' side (such as an
   /// answer that does not verify). Retrying with the same inputs is not
   /// expected to help, except that `recover` does not retry a realm (#7):
-  /// in the unlock phase, an assertion can coincide with another realm's
-  /// transient failure, and then a retry may succeed.
+  /// in any phase, an assertion can be reported together with another
+  /// realm's transient failure (it ranks ahead), and in the unlock phase a
+  /// commitment mismatch can turn a phase whose only errors are transient
+  /// into an assertion; then a retry may succeed.
   case assertion
-  /// A failure in sending a request or receiving its answer, including an
-  /// HTTP status other than 401, 426 and 429 and any error the transport
-  /// throws. Retrying with the same inputs may succeed.
+  /// A failure in sending a request or receiving its answer: a non-2xx
+  /// status other than 401, 426 and 429 whose body is not a realm answer,
+  /// a hardware realm's unavailable, missing-session or session error
+  /// (#8), or any error the transport throws. Retrying with the same inputs
+  /// may succeed.
   case transient
   /// Not reported by `recover`: a configuration that cannot be used fails
   /// earlier, in `JuiceboxConfiguration.parse` (`JuiceboxConfigurationError`).
