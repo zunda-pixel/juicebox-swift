@@ -942,6 +942,18 @@ struct RecoveryFlowTests {
     }
   }
 
+  /// A phase that falls short reports the error that ranks first, in the
+  /// order the documentation of `JuiceboxRecoveryError` lists: `invalidPin`
+  /// (between two, the fewer guesses left), `notRegistered`, `invalidAuth`,
+  /// `upgradeRequired`, `rateLimitExceeded`, `assertion`, `transient`.
+  @Test func errorsRankInTheDocumentedOrder() {
+    let documented: [JuiceboxRecoveryError] = [
+      .invalidPin(guessesRemaining: 0), .invalidPin(guessesRemaining: 3), .notRegistered,
+      .invalidAuth, .upgradeRequired, .rateLimitExceeded, .assertion, .transient,
+    ]
+    #expect(documented.reversed().sorted { $0.sortKey < $1.sortKey } == documented)
+  }
+
   @Test func wrongPinReportsGuesses() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
