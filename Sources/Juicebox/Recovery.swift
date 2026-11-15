@@ -117,9 +117,9 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// For example, an answer that does not verify, or too few answers that
   /// agree (on the OPRF verifying key and unlock key commitment, or on an
   /// encrypted secret whose commitment matches). Retrying with the same
-  /// inputs is not expected to help, except in the cases described under
-  /// ``JuiceboxRecoveryError``, unlike the reference client's description,
-  /// which rules out a retry with the same parameters.
+  /// inputs is not expected to help. Unlike the reference client's
+  /// description, which rules out a retry with the same parameters, a retry
+  /// may help in the cases described under ``JuiceboxRecoveryError``.
   case assertion
   /// A failure in sending a request or receiving its answer.
   ///
@@ -211,8 +211,8 @@ public struct JuiceboxRecovery: Sendable {
     // phase's realms can spare fail the phase with the best of them (of all
     // of them, since every answer is awaited; see `requestEach`). Each phase
     // counts its errors rather than its answers, so an answer skipped without
-    // an error never turns into a spared error: too few usable answers end in
-    // the phase's check that enough of them agree.
+    // an error never makes the phase report an error it could spare: too few
+    // usable answers end in the phase's check that enough of them agree.
 
     // Phase 1: every realm reports the registration version.
     var versions: [(version: [UInt8], realm: JuiceboxRealm)] = []
