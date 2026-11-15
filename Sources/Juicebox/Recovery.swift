@@ -108,9 +108,10 @@ public struct JuiceboxRecovery: Sendable {
   /// Throws `CancellationError` only when the caller cancelled recovery.
   /// Otherwise a failure is a `JuiceboxRecoveryError`.
   ///
-  /// Each phase asks every realm at once, so cancelling during the OPRF phase
-  /// (Recover2, which uses a guess) may still use a guess on each realm that
-  /// the phase already asked.
+  /// A realm counts a guess when the OPRF phase (Recover2) asks it, and
+  /// clears the count only when the unlock phase (Recover3) succeeds there.
+  /// Each phase asks every realm at once, so cancelling once the OPRF phase
+  /// has started may leave a guess used on each realm it already asked.
   @concurrent
   public func recover(
     pin: [UInt8], transport: any JuiceboxHTTPTransport

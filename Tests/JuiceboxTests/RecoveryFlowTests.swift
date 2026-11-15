@@ -151,8 +151,11 @@ struct RecoveryFlowTests {
 
   // MARK: Setup
 
+  /// - Parameter pinHash: The PIN's hash, when it is already known, so the
+  ///   setup does not hash the PIN itself (Standard2019 takes seconds).
   func makeNetwork(
-    pin: [UInt8] = RecoveryFlowTests.pin, mode: JuiceboxPinHashingMode = .fastInsecure
+    pin: [UInt8] = RecoveryFlowTests.pin, mode: JuiceboxPinHashingMode = .fastInsecure,
+    pinHash: (accessKey: [UInt8], encryptionKeySeed: [UInt8])? = nil
   ) throws -> (FakeNetwork, JuiceboxConfiguration, [String: String]) {
     let realmIds = (0..<Self.realmCount).map { index in
       [UInt8](repeating: UInt8(index + 1), count: 16)
@@ -160,8 +163,8 @@ struct RecoveryFlowTests {
     let tokens = Dictionary(
       uniqueKeysWithValues: realmIds.map { (hexString($0), "token-\(hexString($0))") })
 
-    let (accessKey, seed) = try juiceboxPinHash(
-      pin: pin, registrationVersion: Self.version, mode: mode)
+    let (accessKey, seed) =
+      try pinHash ?? juiceboxPinHash(pin: pin, registrationVersion: Self.version, mode: mode)
     let masterOPRF = RistrettoScalar.random()
     let oprfShares = createShares(
       secret: masterOPRF, threshold: Self.threshold, count: Self.realmCount,
@@ -313,8 +316,18 @@ struct RecoveryFlowTests {
   @MainActor
   @Test(.timeLimit(.minutes(1)))
   func recoveryLeavesTheMainActorFree() async throws {
-    let (network, configuration, tokens) = try makeNetwork(mode: .standard2019)
-    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    // The reference vector has this test's PIN and version, so only
+    // `recover` hashes the PIN.
+    try #require(
+      Self.pin == PinHashVector.pin && Self.version == PinHashVector.registrationVersion)
+    let (network, configuration, tokens) = try makeNetwork(
+      mode: .standard2019,
+      pinHash: (
+        try #require(hexBytes(PinHashVector.accessKey)),
+        try #require(hexBytes(PinHashVector.encryptionKeySeed))
+      ))
+    let recovery = JuiceboxRecovery(
+      configuration: configuration, tokens: tokens, userInfo: PinHashVector.userInfo)
     let ticker = Task { @MainActor in
       var longestGap = Duration.zero
       var last = ContinuousClock.now
@@ -326,6 +339,9 @@ struct RecoveryFlowTests {
       }
       return longestGap
     }
+    // Stop the ticker even when `recover` throws, so it does not keep
+    // waking the main actor during the other tests.
+    defer { ticker.cancel() }
     let started = ContinuousClock.now
     let secret = try await recovery.recover(pin: Self.pin, transport: network)
     let elapsed = ContinuousClock.now - started
