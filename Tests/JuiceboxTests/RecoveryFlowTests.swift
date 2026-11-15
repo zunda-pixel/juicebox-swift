@@ -586,13 +586,16 @@ struct RecoveryFlowTests {
   }
 
   /// Records the kind of each request and the URL it went to, and passes
-  /// the request on.
+  /// the request on. The realm at `otherVersionPrefix`, if any, reports a
+  /// different registration version in phase 1.
   private actor RecordingTransport: JuiceboxHTTPTransport {
     let network: FakeNetwork
+    let otherVersionPrefix: String?
     private(set) var requests: [(url: String, kind: String)] = []
 
-    init(network: FakeNetwork) {
+    init(network: FakeNetwork, otherVersionPrefix: String? = nil) {
       self.network = network
+      self.otherVersionPrefix = otherVersionPrefix
     }
 
     func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
@@ -602,6 +605,11 @@ struct RecoveryFlowTests {
         ? "Recover1"
         : ["Recover2", "Recover3"].first { value[$0] != nil } ?? "other"
       requests.append((request.url, kind))
+      if kind == "Recover1", let otherVersionPrefix, request.url.hasPrefix(otherVersionPrefix) {
+        return JuiceboxHTTPResponse(
+          statusCode: 200,
+          body: RecoveryFlowTests.encodeRecover1Ok(version: [UInt8](repeating: 6, count: 16)))
+      }
       return try await network.send(request)
     }
 
@@ -633,6 +641,21 @@ struct RecoveryFlowTests {
     let secret = try await recovery.recover(pin: Self.pin, transport: transport)
     #expect(secret == Self.userSecret)
     #expect(await transport.kinds(sentTo: "https://down.test/") == ["Recover1"])
+    for realm in ["https://realm1.test/", "https://realm3.test/"] {
+      #expect(await transport.kinds(sentTo: realm) == ["Recover1", "Recover2", "Recover3"])
+    }
+  }
+
+  /// A realm that reports another registration version is not asked in the
+  /// OPRF and unlock phases; the realms with the chosen version recover.
+  @Test func aRealmWithAnotherVersionIsNotAskedLater() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = RecordingTransport(
+      network: network, otherVersionPrefix: "https://realm2.test/")
+    let secret = try await recovery.recover(pin: Self.pin, transport: transport)
+    #expect(secret == Self.userSecret)
+    #expect(await transport.kinds(sentTo: "https://realm2.test/") == ["Recover1"])
     for realm in ["https://realm1.test/", "https://realm3.test/"] {
       #expect(await transport.kinds(sentTo: realm) == ["Recover1", "Recover2", "Recover3"])
     }
