@@ -450,15 +450,33 @@ struct RecoveryFlowTests {
     }
   }
 
-  /// Makes one phase fall short with server errors (`transient`) after an
-  /// earlier phase got a lower-ranked error from a realm.
-  /// - `failingPhase == 2`: the first realm reports no guesses left in the
-  ///   version phase, and the second realm's OPRF request fails.
-  /// - `failingPhase == 3`: the third realm's OPRF request is rate limited,
-  ///   and the second and third realms' unlock requests fail.
+  /// Where recovery falls short, after an earlier phase got an error from a
+  /// realm that ranks ahead of the failing phase's own (`bestError` picks the
+  /// lowest rank).
+  enum FailingPhase: CaseIterable, Sendable {
+    /// The first realm reports no guesses left in the version phase, and
+    /// the second realm's OPRF request fails with a server error.
+    case oprf
+    /// The third realm's OPRF request is rate limited, and the second and
+    /// third realms' unlock requests fail with a server error.
+    case unlock
+    /// The first realm reports no guesses left in the version phase, and the
+    /// other two realms answer the unlock request with a wrong
+    /// encrypted-secret commitment, which adds no error.
+    case unlockWithoutErrors
+
+    /// The failing phase's own error.
+    var expectedError: JuiceboxRecoveryError {
+      switch self {
+      case .oprf, .unlock: .transient
+      case .unlockWithoutErrors: .assertion
+      }
+    }
+  }
+
   private struct EarlierPhaseFailureTransport: JuiceboxHTTPTransport {
     let network: FakeNetwork
-    let failingPhase: Int
+    let failingPhase: FailingPhase
 
     func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
       let value = try decodeCBOR(request.body)
@@ -466,36 +484,57 @@ struct RecoveryFlowTests {
       let isRealm2 = request.url.hasPrefix("https://realm2.")
       let isRealm3 = request.url.hasPrefix("https://realm3.")
       switch failingPhase {
-      case 2:
+      case .oprf:
         if isRealm1, value == .textString("Recover1") {
-          return JuiceboxHTTPResponse(
-            statusCode: 200, body: CBOR.map(["Recover1": .textString("NoGuesses")]).encode())
+          return Self.noGuesses
         }
         if isRealm2, value["Recover2"] != nil {
           return JuiceboxHTTPResponse(statusCode: 503, body: [])
         }
-      default:
+      case .unlock:
         if isRealm3, value["Recover2"] != nil {
           return JuiceboxHTTPResponse(statusCode: 429, body: [])
         }
         if isRealm2 || isRealm3, value["Recover3"] != nil {
           return JuiceboxHTTPResponse(statusCode: 503, body: [])
         }
+      case .unlockWithoutErrors:
+        if isRealm1, value == .textString("Recover1") {
+          return Self.noGuesses
+        }
+        if isRealm2 || isRealm3, value["Recover3"] != nil, let realm = network.realms[request.url] {
+          return JuiceboxHTTPResponse(
+            statusCode: 200,
+            body: CBOR.map([
+              "Recover3": .map([
+                "Ok": .map([
+                  "encryption_key_scalar_share": .byteString(realm.scalarShare.bytes),
+                  "encrypted_secret": .byteString(realm.encryptedSecret),
+                  "encrypted_secret_commitment": .byteString([UInt8](repeating: 0, count: 16)),
+                ])
+              ])
+            ]).encode())
+        }
       }
       return try await network.send(request)
     }
+
+    static let noGuesses = JuiceboxHTTPResponse(
+      statusCode: 200, body: CBOR.map(["Recover1": .textString("NoGuesses")]).encode())
   }
 
-  /// When a phase falls short, recovery reports that phase's failure (a
-  /// server error), not a lower-ranked error that a realm gave in an earlier
-  /// phase ("no guesses" in the version phase, a rate limit in the OPRF
-  /// phase).
-  @Test(arguments: [2, 3])
-  func aFailedPhaseReportsItsOwnError(failingPhase: Int) async throws {
+  /// When a phase falls short, recovery reports that phase's own failure,
+  /// not an error that a realm gave in an earlier phase ("no guesses" in the
+  /// version phase, a rate limit in the OPRF phase), even when that error
+  /// ranks ahead. A phase that falls short without errors of its own (wrong
+  /// commitments are skipped) reports `assertion`, as the reference client
+  /// does.
+  @Test(arguments: FailingPhase.allCases)
+  func aFailedPhaseReportsItsOwnError(failingPhase: FailingPhase) async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
     let transport = EarlierPhaseFailureTransport(network: network, failingPhase: failingPhase)
-    await #expect(throws: JuiceboxRecoveryError.transient) {
+    await #expect(throws: failingPhase.expectedError) {
       try await recovery.recover(pin: Self.pin, transport: transport)
     }
   }

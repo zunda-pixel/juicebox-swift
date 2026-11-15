@@ -131,26 +131,26 @@ public struct JuiceboxRecovery: Sendable {
 
     // Phase 1: every realm reports the registration version.
     var versions: [(version: [UInt8], realm: JuiceboxRealm)] = []
-    var errors: [JuiceboxRecoveryError] = []
+    var versionErrors: [JuiceboxRecoveryError] = []
     let phase1 = try await requestEach(
       configuration.realms, transport: transport, request: .recover1)
     for (realm, outcome) in zip(configuration.realms, phase1) {
       do {
         guard case .recover1(let response) = try outcome.get() else {
-          errors.append(.assertion)
+          versionErrors.append(.assertion)
           continue
         }
         switch response {
         case .ok(let version): versions.append((version, realm))
-        case .notRegistered: errors.append(.notRegistered)
-        case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
+        case .notRegistered: versionErrors.append(.notRegistered)
+        case .noGuesses: versionErrors.append(.invalidPin(guessesRemaining: 0))
         }
       } catch {
         try Task.checkCancellation()
-        errors.append(recoveryError(from: error))
+        versionErrors.append(recoveryError(from: error))
       }
     }
-    guard versions.count >= threshold else { throw bestError(errors) }
+    guard versions.count >= threshold else { throw bestError(versionErrors) }
 
     let byVersion = Dictionary(grouping: versions, by: { $0.version })
     let viableVersions = byVersion.filter { $0.value.count >= threshold }
@@ -167,10 +167,10 @@ public struct JuiceboxRecovery: Sendable {
       mode: configuration.pinHashingMode)
     let (blindingFactor, blindedInput) = OPRF.start(input: accessKey)
 
-    // A phase that falls short reports its own realms' errors, as the
-    // reference client does; an earlier phase's error (a realm that did not
-    // take part) must not stand for this phase's failure.
-    errors.removeAll()
+    // Each phase keeps its own errors, as the reference client joins each
+    // phase anew: a phase that falls short reports its own realms' errors,
+    // not an earlier phase's.
+    var oprfErrors: [JuiceboxRecoveryError] = []
     var pointShares:
       [(
         share: SecretShare<RistrettoPoint>, commitment: [UInt8],
@@ -182,7 +182,7 @@ public struct JuiceboxRecovery: Sendable {
     for (realm, outcome) in zip(realms, phase2) {
       do {
         guard case .recover2(let recover2) = try outcome.get() else {
-          errors.append(.assertion)
+          oprfErrors.append(.assertion)
           continue
         }
         switch recover2 {
@@ -199,7 +199,7 @@ public struct JuiceboxRecovery: Sendable {
             let index = configuration.shareIndex(for: realm.id),
             numGuesses >= guessCount
           else {
-            errors.append(.assertion)
+            oprfErrors.append(.assertion)
             continue
           }
           pointShares.append(
@@ -208,16 +208,16 @@ public struct JuiceboxRecovery: Sendable {
               unlockKeyCommitment, signedPublicKey.verifyingKey,
               Int(numGuesses - guessCount)
             ))
-        case .versionMismatch: errors.append(.assertion)
-        case .notRegistered: errors.append(.notRegistered)
-        case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
+        case .versionMismatch: oprfErrors.append(.assertion)
+        case .notRegistered: oprfErrors.append(.notRegistered)
+        case .noGuesses: oprfErrors.append(.invalidPin(guessesRemaining: 0))
         }
       } catch {
         try Task.checkCancellation()
-        errors.append(recoveryError(from: error))
+        oprfErrors.append(recoveryError(from: error))
       }
     }
-    guard pointShares.count >= threshold else { throw bestError(errors) }
+    guard pointShares.count >= threshold else { throw bestError(oprfErrors) }
 
     let byKey = Dictionary(
       grouping: pointShares,
@@ -246,7 +246,7 @@ public struct JuiceboxRecovery: Sendable {
 
     // Phase 3: exchange the unlock key tag for each realm's scalar share,
     // then decrypt the user secret.
-    errors.removeAll()
+    var unlockErrors: [JuiceboxRecoveryError] = []
     var scalarShares: [(share: SecretShare<RistrettoScalar>, encryptedSecret: [UInt8])] = []
     let phase3 = try await requestEach(realms, transport: transport) { realm in
       .recover3(
@@ -256,7 +256,7 @@ public struct JuiceboxRecovery: Sendable {
     for (realm, outcome) in zip(realms, phase3) {
       do {
         guard case .recover3(let recover3) = try outcome.get() else {
-          errors.append(.assertion)
+          unlockErrors.append(.assertion)
           continue
         }
         switch recover3 {
@@ -264,7 +264,7 @@ public struct JuiceboxRecovery: Sendable {
           guard let scalar = canonicalScalar(scalarShare),
             let index = configuration.shareIndex(for: realm.id)
           else {
-            errors.append(.assertion)
+            unlockErrors.append(.assertion)
             continue
           }
           let ours = JuiceboxKeys.encryptedUserSecretCommitment(
@@ -275,18 +275,18 @@ public struct JuiceboxRecovery: Sendable {
             (
               SecretShare(index: index, secret: scalar), encryptedSecret
             ))
-        case .versionMismatch: errors.append(.assertion)
-        case .notRegistered: errors.append(.notRegistered)
+        case .versionMismatch: unlockErrors.append(.assertion)
+        case .notRegistered: unlockErrors.append(.notRegistered)
         case .badUnlockKeyTag(let guesses):
-          errors.append(.invalidPin(guessesRemaining: Int(guesses)))
-        case .noGuesses: errors.append(.invalidPin(guessesRemaining: 0))
+          unlockErrors.append(.invalidPin(guessesRemaining: Int(guesses)))
+        case .noGuesses: unlockErrors.append(.invalidPin(guessesRemaining: 0))
         }
       } catch {
         try Task.checkCancellation()
-        errors.append(recoveryError(from: error))
+        unlockErrors.append(recoveryError(from: error))
       }
     }
-    guard scalarShares.count >= threshold else { throw bestError(errors) }
+    guard scalarShares.count >= threshold else { throw bestError(unlockErrors) }
 
     let bySecret = Dictionary(grouping: scalarShares, by: { $0.encryptedSecret })
     let viableSecrets = bySecret.filter { $0.value.count >= threshold }
