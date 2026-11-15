@@ -450,78 +450,90 @@ struct RecoveryFlowTests {
     }
   }
 
-  /// Where recovery falls short, after an earlier phase got an error from a
-  /// realm that ranks ahead of the failing phase's own (`bestError` picks the
-  /// lowest rank).
+  /// How a phase falls short in `aFailedPhaseReportsItsOwnError`. A phase
+  /// fails with the best of its own errors (`bestError` picks the lowest
+  /// rank) when more of its realms fail than can be spared, never with an
+  /// earlier phase's error. In the unlock phase, a shortfall with no more
+  /// errors than can be spared comes from answers whose encrypted-secret
+  /// commitment does not match, and reports `assertion`.
   enum FailingPhase: CaseIterable, Sendable {
-    /// The first realm reports no guesses left in the version phase, and
-    /// the second realm's OPRF request fails with a server error.
+    /// The first realm reports no guesses left in the version phase (an
+    /// error that ranks ahead), and the second realm's OPRF request fails
+    /// with a server error.
     case oprf
-    /// The third realm's OPRF request is rate limited, and the second and
-    /// third realms' unlock requests fail with a server error.
+    /// The third realm's OPRF request is rate limited (an error that ranks
+    /// ahead), and the second and third realms' unlock requests fail with a
+    /// server error.
     case unlock
+    /// In the unlock phase, the first realm reports a bad unlock key tag
+    /// with 3 guesses left and the second fails with a server error: the
+    /// best of the phase's own errors.
+    case unlockWithTwoErrors
     /// The first realm reports no guesses left in the version phase, and the
-    /// other two realms answer the unlock request with a wrong
-    /// encrypted-secret commitment, which adds no error.
+    /// other two realms answer the unlock request with a wrong commitment,
+    /// which adds no error.
     case unlockWithoutErrors
-    /// In the unlock phase, the first realm reports a bad unlock key tag,
-    /// the second answers with a wrong encrypted-secret commitment, and the
-    /// third answers correctly: only one error, so enough realms answered,
-    /// and the shortfall comes from the mismatch.
+    /// In the unlock phase, the first realm reports a bad unlock key tag, the
+    /// second answers with a wrong commitment, and the third answers
+    /// correctly: one error can be spared, so the shortfall comes from the
+    /// mismatch.
     case unlockWithAnErrorAndAMismatch
 
-    /// The failing phase's own error.
     var expectedError: JuiceboxRecoveryError {
       switch self {
       case .oprf, .unlock: .transient
+      case .unlockWithTwoErrors: .invalidPin(guessesRemaining: 3)
       case .unlockWithoutErrors, .unlockWithAnErrorAndAMismatch: .assertion
       }
     }
   }
 
-  private struct EarlierPhaseFailureTransport: JuiceboxHTTPTransport {
+  private struct PhaseFailureTransport: JuiceboxHTTPTransport {
     let network: FakeNetwork
     let failingPhase: FailingPhase
 
     func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
       let value = try decodeCBOR(request.body)
+      let isRecover1 = value == .textString("Recover1")
+      let isRecover2 = value["Recover2"] != nil
+      let isRecover3 = value["Recover3"] != nil
       let isRealm1 = request.url.hasPrefix("https://realm1.")
       let isRealm2 = request.url.hasPrefix("https://realm2.")
       let isRealm3 = request.url.hasPrefix("https://realm3.")
       switch failingPhase {
       case .oprf:
-        if isRealm1, value == .textString("Recover1") {
-          return Self.noGuesses
-        }
-        if isRealm2, value["Recover2"] != nil {
-          return JuiceboxHTTPResponse(statusCode: 503, body: [])
-        }
+        if isRealm1, isRecover1 { return try Self.noGuesses() }
+        if isRealm2, isRecover2 { return Self.serverError }
       case .unlock:
-        if isRealm3, value["Recover2"] != nil {
-          return JuiceboxHTTPResponse(statusCode: 429, body: [])
-        }
-        if isRealm2 || isRealm3, value["Recover3"] != nil {
-          return JuiceboxHTTPResponse(statusCode: 503, body: [])
-        }
+        if isRealm3, isRecover2 { return JuiceboxHTTPResponse(statusCode: 429, body: []) }
+        if isRealm2 || isRealm3, isRecover3 { return Self.serverError }
+      case .unlockWithTwoErrors:
+        if isRealm1, isRecover3 { return try Self.badUnlockKeyTag() }
+        if isRealm2, isRecover3 { return Self.serverError }
       case .unlockWithoutErrors:
-        if isRealm1, value == .textString("Recover1") {
-          return Self.noGuesses
-        }
-        if isRealm2 || isRealm3, value["Recover3"] != nil {
-          return try mismatchedCommitment(for: request)
-        }
+        if isRealm1, isRecover1 { return try Self.noGuesses() }
+        if isRealm2 || isRealm3, isRecover3 { return try mismatchedCommitment(for: request) }
       case .unlockWithAnErrorAndAMismatch:
-        if isRealm1, value["Recover3"] != nil {
-          return try Self.checked(
-            CBOR.map([
-              "Recover3": .map(["BadUnlockKeyTag": .map(["guesses_remaining": .unsignedInt(3)])])
-            ]).encode())
-        }
-        if isRealm2, value["Recover3"] != nil {
-          return try mismatchedCommitment(for: request)
-        }
+        if isRealm1, isRecover3 { return try Self.badUnlockKeyTag() }
+        if isRealm2, isRecover3 { return try mismatchedCommitment(for: request) }
       }
       return try await network.send(request)
+    }
+
+    static let serverError = JuiceboxHTTPResponse(statusCode: 503, body: [])
+
+    static func noGuesses() throws -> JuiceboxHTTPResponse {
+      try answer(
+        CBOR.map(["Recover1": .textString("NoGuesses")]).encode(),
+        decodingAs: .recover1(.noGuesses))
+    }
+
+    static func badUnlockKeyTag() throws -> JuiceboxHTTPResponse {
+      try answer(
+        CBOR.map([
+          "Recover3": .map(["BadUnlockKeyTag": .map(["guesses_remaining": .unsignedInt(3)])])
+        ]).encode(),
+        decodingAs: .recover3(.badUnlockKeyTag(guessesRemaining: 3)))
     }
 
     /// The realm's own unlock answer, but with a wrong encrypted-secret
@@ -530,43 +542,44 @@ struct RecoveryFlowTests {
       -> JuiceboxHTTPResponse
     {
       let realm = try #require(network.realms[request.url])
-      return try Self.checked(
+      let wrongCommitment = [UInt8](repeating: 0, count: 16)
+      return try Self.answer(
         CBOR.map([
           "Recover3": .map([
             "Ok": .map([
               "encryption_key_scalar_share": .byteString(realm.scalarShare.bytes),
               "encrypted_secret": .byteString(realm.encryptedSecret),
-              "encrypted_secret_commitment": .byteString([UInt8](repeating: 0, count: 16)),
+              "encrypted_secret_commitment": .byteString(wrongCommitment),
             ])
           ])
-        ]).encode())
+        ]).encode(),
+        decodingAs: .recover3(
+          .ok(
+            scalarShare: realm.scalarShare.bytes, encryptedSecret: realm.encryptedSecret,
+            commitment: wrongCommitment)))
     }
 
-    /// A hand-built unlock answer, checked to decode as one: if it did not,
-    /// recovery would count it as a failed request, and the test would pass
-    /// or fail for that reason instead.
-    private static func checked(_ body: [UInt8]) throws -> JuiceboxHTTPResponse {
-      guard case .recover3 = try SecretsResponse.decode(body) else {
-        throw JuiceboxRecoveryError.invalidConfiguration
-      }
+    /// Recovery counts an answer it cannot decode as a failed request
+    /// (`transient`), which could let a case pass for another reason, so
+    /// each hand-built answer must decode as intended, or the test records
+    /// an issue here. A thrown error alone would not: recovery catches it.
+    private static func answer(_ body: [UInt8], decodingAs expected: SecretsResponse) throws
+      -> JuiceboxHTTPResponse
+    {
+      let decoded = try? SecretsResponse.decode(body)
+      try #require(decoded == expected)
       return JuiceboxHTTPResponse(statusCode: 200, body: body)
     }
-
-    static let noGuesses = JuiceboxHTTPResponse(
-      statusCode: 200, body: CBOR.map(["Recover1": .textString("NoGuesses")]).encode())
   }
 
-  /// When a phase falls short, recovery reports that phase's own failure,
-  /// not an error that a realm gave in an earlier phase ("no guesses" in the
-  /// version phase, a rate limit in the OPRF phase), even when that error
-  /// ranks ahead. A phase that falls short without errors of its own (wrong
-  /// commitments are skipped) reports `assertion`, as the reference client
-  /// does.
+  /// A phase that falls short reports its own failure, never an earlier
+  /// phase's error, even one that ranks ahead. See `FailingPhase` for the
+  /// unlock phase's rule and each case.
   @Test(arguments: FailingPhase.allCases)
   func aFailedPhaseReportsItsOwnError(failingPhase: FailingPhase) async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-    let transport = EarlierPhaseFailureTransport(network: network, failingPhase: failingPhase)
+    let transport = PhaseFailureTransport(network: network, failingPhase: failingPhase)
     await #expect(throws: failingPhase.expectedError) {
       try await recovery.recover(pin: Self.pin, transport: transport)
     }

@@ -287,10 +287,11 @@ public struct JuiceboxRecovery: Sendable {
       }
     }
     // As in the reference client (`join_at_least_threshold`): more errors than
-    // the realms that can be spared fail the phase with the best of them.
-    // Otherwise enough realms answered, and a shortfall comes from answers
-    // whose commitment did not match, which is an assertion; the OPRF phase
-    // has already confirmed the PIN, so `invalidPin` would mislead.
+    // the phase's realms can spare fail the phase with the best of them.
+    // Otherwise enough realms answered, and a shortfall can only come from
+    // answers whose encrypted-secret commitment did not match (an
+    // inconsistency on the realms' side), which the reference client reports
+    // as an assertion.
     guard unlockErrors.count <= realms.count - threshold else { throw bestError(unlockErrors) }
     guard scalarShares.count >= threshold else { throw JuiceboxRecoveryError.assertion }
 
