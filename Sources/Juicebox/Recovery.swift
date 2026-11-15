@@ -30,6 +30,9 @@ public struct JuiceboxHTTPResponse: Sendable {
   }
 }
 
+/// Performs the realm requests recovery asks for. Recovery calls `send`
+/// concurrently: each phase sends one request to every realm at once, so an
+/// implementation must not assume one request at a time.
 public protocol JuiceboxHTTPTransport: Sendable {
   func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse
 }
@@ -286,6 +289,14 @@ public struct JuiceboxRecovery: Sendable {
 
   // MARK: Realm requests
 
+  /// Sends the same request to every realm at once; see the overload below.
+  private func requestEach(
+    _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
+    request: SecretsRequest
+  ) async throws -> [Result<SecretsResponse, any Error>] {
+    try await requestEach(realms, transport: transport) { _ in request }
+  }
+
   /// Sends one request to every realm at once and returns each outcome in the
   /// realms' order, so a phase checks the answers in the same order however
   /// they arrive. A phase then takes as long as its slowest realm instead of
@@ -294,13 +305,6 @@ public struct JuiceboxRecovery: Sendable {
   /// returns early once too many realms have failed, which this does not do.
   /// A cancellation reaches the caller as a failed outcome, which the phase
   /// turns into `CancellationError`.
-  private func requestEach(
-    _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
-    request: SecretsRequest
-  ) async throws -> [Result<SecretsResponse, any Error>] {
-    try await requestEach(realms, transport: transport) { _ in request }
-  }
-
   private func requestEach(
     _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
     makeRequest: (JuiceboxRealm) -> SecretsRequest
@@ -319,12 +323,16 @@ public struct JuiceboxRecovery: Sendable {
           }
         }
       }
-      var outcomes = [Result<SecretsResponse, any Error>](
-        repeating: .failure(CancellationError()), count: realms.count)
+      // The group waits for every child, so every slot is filled. A missing
+      // one is a bug in this function, not a cancellation, so stop there.
+      var outcomes = [Result<SecretsResponse, any Error>?](repeating: nil, count: realms.count)
       for await (index, outcome) in group {
         outcomes[index] = outcome
       }
-      return outcomes
+      return outcomes.map { outcome in
+        guard let outcome else { preconditionFailure("a realm request returned no outcome") }
+        return outcome
+      }
     }
   }
 

@@ -156,7 +156,10 @@ struct HardwareRecoveryTests {
   private final class FakeNetwork: JuiceboxHTTPTransport, @unchecked Sendable {
     let realms: [String: RealmFixture]
     let signer: Curve25519.Signing.PrivateKey
-    var sessions: [UInt32: ServerTransport] = [:]
+    /// Recovery sends a phase's requests to the realms concurrently, so the
+    /// sessions are guarded by a lock.
+    private let lock = NSLock()
+    private var sessions: [UInt32: ServerTransport] = [:]
 
     init(realms: [RealmFixture]) {
       self.realms = Dictionary(
@@ -196,7 +199,7 @@ struct HardwareRecoveryTests {
           responsePayload = paddedEnvelope(inner)
         }
         let (ciphertext, transport) = try server.finish(payload: responsePayload)
-        sessions[UInt32(sessionId)] = transport
+        lock.withLock { sessions[UInt32(sessionId)] = transport }
         return JuiceboxHTTPResponse(
           statusCode: 200,
           body: CBOR.map([
@@ -218,7 +221,7 @@ struct HardwareRecoveryTests {
       guard
         let transportCiphertext = encrypted["Transport"]?["ciphertext"]?
           .bytes,
-        let transport = sessions[UInt32(sessionId)]
+        let transport = lock.withLock({ sessions[UInt32(sessionId)] })
       else { return JuiceboxHTTPResponse(statusCode: 400, body: []) }
       let plaintext = try transport.open(transportCiphertext)
       let inner = try response(for: realm, request: decodeCBOR(plaintext))
