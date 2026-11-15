@@ -62,6 +62,9 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// OPRF phase has confirmed the PIN, as in the reference client.
   case invalidPin(guessesRemaining: Int?)
   /// The secret is not registered, or not fully registered, with the realms.
+  /// Since `recover` does not retry a realm (#7), this is also reported when
+  /// a realm's transient failure leaves too few realms agreeing on a
+  /// version; then a retry may succeed.
   case notRegistered
   /// A realm rejected the authentication token, or no token was given for
   /// a realm.
@@ -72,17 +75,20 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   case rateLimitExceeded
   /// A software error or an inconsistency on the realms' side (such as an
   /// answer that does not verify). Retrying with the same inputs is not
-  /// expected to help, except that `recover` does not retry a realm (#7):
-  /// in any phase, an assertion can be reported together with another
-  /// realm's transient failure (it ranks ahead), and in the unlock phase a
-  /// commitment mismatch can turn a phase whose only errors are transient
-  /// into an assertion; then a retry may succeed.
+  /// expected to help, except that `recover` does not retry a realm (#7),
+  /// so a retry may succeed in two cases: an assertion from one realm ranks
+  /// ahead of another realm's transient failure, so it is reported although
+  /// retrying that realm may let the phase succeed; and a phase whose only
+  /// errors are transient still reports an assertion when the answers it
+  /// did get do not agree (OPRF or encrypted-secret answers that differ, or
+  /// an unlock answer whose commitment does not match).
   case assertion
   /// A failure in sending a request or receiving its answer: a non-2xx
   /// status other than 401, 426 and 429 whose body is not a realm answer,
-  /// a hardware realm's unavailable, missing-session or session error
-  /// (#8), or any error the transport throws. Retrying with the same inputs
-  /// may succeed.
+  /// a hardware realm's unavailable error or its missing-session or session
+  /// error (#8; the reference client reports these two as an assertion on a
+  /// new session, which `recover` always opens), or any error the transport
+  /// throws. Retrying with the same inputs may succeed.
   case transient
   /// Not reported by `recover`: a configuration that cannot be used fails
   /// earlier, in `JuiceboxConfiguration.parse` (`JuiceboxConfigurationError`).
