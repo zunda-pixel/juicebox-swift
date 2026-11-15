@@ -287,7 +287,8 @@ public struct JuiceboxRecovery: Sendable {
       }
     }
     // As in the reference client (`join_at_least_threshold`): more errors than
-    // the phase's realms can spare fail the phase with the best of them.
+    // the phase's realms can spare fail the phase with the best of them (of
+    // all of them, since every answer is awaited; see `requestEach`).
     // Otherwise enough realms answered, and a shortfall can only come from
     // answers whose encrypted-secret commitment did not match (an
     // inconsistency on the realms' side), which the reference client reports
