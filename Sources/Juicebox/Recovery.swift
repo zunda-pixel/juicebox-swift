@@ -116,6 +116,10 @@ public struct JuiceboxRecovery: Sendable {
   /// clears the count only when the unlock phase (Recover3) succeeds there.
   /// Each phase asks every realm at once, so cancelling once the OPRF phase
   /// has started may leave a guess used on each realm it already asked.
+  ///
+  /// A cancellation that arrives while the PIN is being hashed (Standard2019
+  /// takes seconds) takes effect once the hashing ends, before the OPRF
+  /// phase.
   @concurrent
   public func recover(
     pin: [UInt8], transport: any JuiceboxHTTPTransport
@@ -485,10 +489,10 @@ public struct JuiceboxRecovery: Sendable {
       // Recovery stops only when the caller cancelled it. A transport may
       // also report a cancellation for its own reasons (an invalidated
       // session, a cancelled authentication challenge); that is a failure of
-      // this realm, so
-      // the other realms can still answer, and the caller does not mistake a
-      // real failure for its own cancellation. This only checks the request's
-      // own task; the phase decides whether the caller cancelled.
+      // this realm, so the other realms can still answer, and the caller does
+      // not mistake a real failure for its own cancellation. This only checks
+      // the request's own task; the phase decides whether the caller
+      // cancelled.
       try Task.checkCancellation()
       throw JuiceboxRecoveryError.transient
     }

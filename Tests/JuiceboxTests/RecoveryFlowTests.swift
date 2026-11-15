@@ -423,9 +423,9 @@ struct RecoveryFlowTests {
 
   /// A cancellation the transport reports while the caller has not cancelled
   /// (an invalidated session, a cancelled authentication challenge, a
-  /// cancelled request task)
-  /// is a failure of that realm, not the caller's cancellation: recovery
-  /// fails with a recovery error, and the other realms can still answer.
+  /// cancelled request task) is a failure of that realm, not the caller's
+  /// cancellation: recovery fails with a recovery error, and the other realms
+  /// can still answer.
   @Test func aTransportCancellationIsARealmFailure() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
@@ -443,7 +443,9 @@ struct RecoveryFlowTests {
       let oneRealm = CancellingTransport(network: network, mode: mode)
       let secret = try await recovery.recover(pin: Self.pin, transport: oneRealm)
       #expect(secret == Self.userSecret)
-      // The first realm did take the failing path.
+      // The first realm's requests did take the cancelling path. That
+      // recovery drops an answer whose task was cancelled is checked by
+      // `cancelsItsOwnTaskThenAnswers` above.
       #expect(await oneRealm.firstRealmCancellations > 0)
     }
   }
