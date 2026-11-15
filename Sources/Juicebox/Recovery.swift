@@ -31,11 +31,11 @@ public struct JuiceboxHTTPResponse: Sendable {
 }
 
 /// Performs the realm requests recovery asks for. Recovery calls `send`
-/// concurrently: each phase asks every realm at once, so an implementation
-/// must not assume one request at a time. Within one recovery, a realm has
-/// at most one request in flight; for a hardware realm, the OPRF and unlock
-/// phases (Recover2 and Recover3) call `send` twice in turn (the Noise
-/// handshake, then the request).
+/// concurrently: each phase asks all of its realms at once, so an
+/// implementation must not assume one request at a time. Within one
+/// recovery, a realm has at most one request in flight; for a hardware
+/// realm, the OPRF and unlock phases (Recover2 and Recover3) call `send`
+/// twice in turn (the Noise handshake, then the request).
 ///
 /// An error `send` throws, including `CancellationError` or a cancelled
 /// `URLError`, is a failure of that realm unless the caller cancelled
@@ -114,8 +114,9 @@ public struct JuiceboxRecovery: Sendable {
   ///
   /// A realm counts a guess when the OPRF phase (Recover2) asks it, and
   /// clears the count only when the unlock phase (Recover3) succeeds there.
-  /// Each phase asks every realm at once, so cancelling once the OPRF phase
-  /// has started may leave a guess used on each realm it already asked.
+  /// Each phase asks all of its realms at once, so cancelling once the OPRF
+  /// phase has started may leave a guess used on each realm it already
+  /// asked.
   ///
   /// A cancellation that arrives while the PIN is being hashed (Standard2019
   /// takes seconds) takes effect once the hashing ends, before the OPRF
@@ -306,7 +307,8 @@ public struct JuiceboxRecovery: Sendable {
 
   // MARK: Realm requests
 
-  /// Sends the same request to every realm at once; see the overload below.
+  /// Sends the same request to each of `realms` at once; see the overload
+  /// below.
   private func requestEach(
     _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
     request: SecretsRequest
@@ -314,7 +316,7 @@ public struct JuiceboxRecovery: Sendable {
     try await requestEach(realms, transport: transport) { _ in request }
   }
 
-  /// Sends one request to every realm at once and returns each outcome in the
+  /// Sends one request to each of `realms` at once and returns each outcome in the
   /// realms' order, so a phase checks the answers in the same order however
   /// they arrive. A phase then takes as long as its slowest realm instead of
   /// the sum of all of them, which matters when several realms are slow or
