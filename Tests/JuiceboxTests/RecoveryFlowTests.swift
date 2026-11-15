@@ -485,12 +485,18 @@ struct RecoveryFlowTests {
     /// correctly: one error can be spared, so the shortfall comes from the
     /// mismatch.
     case unlockWithAnErrorAndAMismatch
+    /// The same with a server error instead of the bad tag: one error can be
+    /// spared, so the result is `assertion`, not `transient` (it used to be
+    /// `transient`; this package does not retry, #7).
+    case unlockWithAServerErrorAndAMismatch
 
     /// The answers `PhaseFailureTransport` makes up when recovery gets as far
     /// as the scenario.
     var injectedAnswers: Int {
       switch self {
-      case .oprf, .unlockAfterAVersionError, .unlockWithAnErrorAndAMismatch: 2
+      case .oprf, .unlockAfterAVersionError, .unlockWithAnErrorAndAMismatch,
+        .unlockWithAServerErrorAndAMismatch:
+        2
       case .unlock, .unlockWithThreeErrors, .unlockWithoutErrors: 3
       }
     }
@@ -499,7 +505,9 @@ struct RecoveryFlowTests {
       switch self {
       case .oprf, .unlock: .transient
       case .unlockWithThreeErrors, .unlockAfterAVersionError: .invalidPin(guessesRemaining: 3)
-      case .unlockWithoutErrors, .unlockWithAnErrorAndAMismatch: .assertion
+      case .unlockWithoutErrors, .unlockWithAnErrorAndAMismatch,
+        .unlockWithAServerErrorAndAMismatch:
+        .assertion
       }
     }
   }
@@ -550,6 +558,9 @@ struct RecoveryFlowTests {
         if isRealm2 || isRealm3, isRecover3 { return try mismatchedCommitment(for: request) }
       case .unlockWithAnErrorAndAMismatch:
         if isRealm1, isRecover3 { return try Self.badUnlockKeyTag() }
+        if isRealm2, isRecover3 { return try mismatchedCommitment(for: request) }
+      case .unlockWithAServerErrorAndAMismatch:
+        if isRealm1, isRecover3 { return Self.serverError }
         if isRealm2, isRecover3 { return try mismatchedCommitment(for: request) }
       }
       return nil
