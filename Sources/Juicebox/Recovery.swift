@@ -56,32 +56,29 @@ public protocol JuiceboxHTTPTransport: Sendable {
 /// a phase's realms fail than it can spare, `recover` reports the best of
 /// that phase's errors, in the order of these cases (between two
 /// `invalidPin`s, the fewer guesses left). Other failures report a fixed
-/// case, such as a wrong PIN, realms that disagree, too few matching answers
-/// in the unlock phase, or a secret that does not decrypt.
+/// case, such as a wrong PIN, answers that do not agree, or a secret that
+/// does not decrypt.
 ///
-/// The reported case need not be what left the phase short: another realm's
-/// failure that ranks behind it may have been. A retry may then succeed if
-/// that failure was transient (which `recover` does not retry,
-/// zunda-pixel/juicebox-swift#7) or a rate limit.
+/// So the reported case need not be the only reason recovery failed: another
+/// realm may have failed transiently or been rate limited, and a retry may
+/// then succeed, even after `invalidPin(guessesRemaining: 0)`,
+/// `notRegistered` or `assertion`. `recover` itself does not retry a realm
+/// (zunda-pixel/juicebox-swift#7).
 ///
 /// The descriptions follow the reference client's `RecoverError`.
 public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// The secret could not be unlocked.
   ///
   /// Another PIN can be tried while guesses remain (`guessesRemaining`;
-  /// `recover` always gives a value). Zero means at least one realm reported
-  /// no guesses left; that alone does not mean the secret is locked, as
-  /// another realm's failure may be what left the phase short (see
-  /// ``JuiceboxRecoveryError``). In the unlock phase this can also come from
-  /// a realm's bad unlock key tag after the OPRF phase has confirmed the PIN,
-  /// as in the reference client.
+  /// `recover` always gives a value). Zero alone does not mean the secret is
+  /// locked: other realms may still have guesses, or another realm's failure
+  /// may be what left the phase short (see ``JuiceboxRecoveryError``). In the
+  /// unlock phase this can also come from a realm's bad unlock key tag after
+  /// the OPRF phase has confirmed the PIN, as in the reference client.
   case invalidPin(guessesRemaining: Int?)
-  /// The secret is not registered, or not fully registered, with the realms.
-  ///
-  /// This is also reported when no more realms fail than the version phase
-  /// can spare but no version has answers from enough realms. If one of them
-  /// failed transiently, a retry may then succeed, as `recover` does not
-  /// retry a realm (zunda-pixel/juicebox-swift#7).
+  /// The secret is not registered, or not fully registered, with the realms,
+  /// or no registration version has answers from enough realms (see
+  /// ``JuiceboxRecoveryError`` for when a retry may help).
   case notRegistered
   /// A realm rejected the authentication token, or no token was given for
   /// a realm.
@@ -90,17 +87,13 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   case upgradeRequired
   /// The tenant made too many requests; try again later.
   case rateLimitExceeded
-  /// A software error or an inconsistency on the realms' side, such as an
-  /// answer that does not verify.
+  /// A software error or an inconsistency on the realms' side.
   ///
-  /// Retrying with the same inputs is not expected to help, with two
-  /// exceptions, as `recover` does not retry a realm
-  /// (zunda-pixel/juicebox-swift#7). An assertion can rank ahead of another
-  /// realm's failure (see ``JuiceboxRecoveryError``). And it is reported when
-  /// no more realms fail than a phase can spare but too few of its answers
-  /// agree to reach the threshold (on the OPRF key and unlock key
-  /// commitment, or on an encrypted secret whose commitment matches); if one
-  /// of the realms failed transiently, a retry may then succeed.
+  /// For example, an answer that does not verify, or too few answers that
+  /// agree (on the OPRF verifying key and unlock key commitment, or on an
+  /// encrypted secret whose commitment matches). Retrying with the same
+  /// inputs is not expected to help, except in the cases described under
+  /// ``JuiceboxRecoveryError``.
   case assertion
   /// A failure in sending a request or receiving its answer.
   ///

@@ -498,7 +498,7 @@ struct RecoveryFlowTests {
     case versionWithAServerErrorAndAMismatch
     /// In the OPRF phase, the first realm fails with a server error and the
     /// second answers with a wrong unlock key commitment: one error can be
-    /// spared, but no OPRF key has enough realms.
+    /// spared, but no OPRF verifying key and commitment has enough realms.
     case oprfWithAServerErrorAndAMismatch
     /// The same with a rate limit instead of the server error: if the made-up
     /// OPRF answer failed to verify, the phase would have two errors and
