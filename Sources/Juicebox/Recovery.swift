@@ -53,18 +53,24 @@ public protocol JuiceboxHTTPTransport: Sendable {
 /// cases (between two `invalidPin`s, the fewer guesses left). Other failures
 /// report a fixed case, such as a wrong PIN, realms that disagree, too few
 /// matching answers in the unlock phase, or a secret that does not decrypt.
-/// The descriptions follow the reference client's `RecoverError`.
+/// Since `recover` does not retry a realm (#7), a case that ranks ahead of
+/// `transient` can be reported when another realm's transient failure is
+/// what left the phase short; then a retry may succeed. The descriptions
+/// follow the reference client's `RecoverError`.
 public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// The secret could not be unlocked. Another PIN can be tried while
   /// guesses remain (`guessesRemaining`; `recover` always gives a value).
-  /// Zero means at least one realm reported no guesses left. In the unlock
+  /// Zero means at least one realm reported no guesses left; that alone
+  /// does not mean the secret is locked, as another realm's transient
+  /// failure may be what left the phase short (see above). In the unlock
   /// phase this can also come from a realm's bad unlock key tag after the
   /// OPRF phase has confirmed the PIN, as in the reference client.
   case invalidPin(guessesRemaining: Int?)
   /// The secret is not registered, or not fully registered, with the realms.
   /// Since `recover` does not retry a realm (#7), this is also reported when
-  /// a realm's transient failure leaves too few realms agreeing on a
-  /// version; then a retry may succeed.
+  /// no more realms fail than the version phase can spare, all of them
+  /// transiently, and too few of the others agree on a version; then a retry
+  /// may succeed.
   case notRegistered
   /// A realm rejected the authentication token, or no token was given for
   /// a realm.
@@ -75,13 +81,12 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   case rateLimitExceeded
   /// A software error or an inconsistency on the realms' side (such as an
   /// answer that does not verify). Retrying with the same inputs is not
-  /// expected to help, except that `recover` does not retry a realm (#7),
-  /// so a retry may succeed in two cases: an assertion from one realm ranks
-  /// ahead of another realm's transient failure, so it is reported although
-  /// retrying that realm may let the phase succeed; and a phase whose only
-  /// errors are transient still reports an assertion when the answers it
-  /// did get do not agree (OPRF or encrypted-secret answers that differ, or
-  /// an unlock answer whose commitment does not match).
+  /// expected to help, except that `recover` does not retry a realm (#7):
+  /// besides ranking ahead of another realm's transient failure (see above),
+  /// an assertion is reported when no more of a phase's realms fail than it
+  /// can spare, all of them transiently, and the answers it did get do not
+  /// agree (OPRF or encrypted-secret answers that differ, or an unlock
+  /// answer whose commitment does not match); then a retry may succeed.
   case assertion
   /// A failure in sending a request or receiving its answer: a non-2xx
   /// status other than 401, 426 and 429 whose body is not a realm answer,
