@@ -105,12 +105,11 @@ public struct JuiceboxRecovery: Sendable {
     // Phase 1: every realm reports the registration version.
     var versions: [(version: [UInt8], realm: JuiceboxRealm)] = []
     var errors: [JuiceboxRecoveryError] = []
-    for realm in configuration.realms {
+    let phase1 = try await requestEach(configuration.realms, transport: transport) { _ in .recover1
+    }
+    for (realm, outcome) in zip(configuration.realms, phase1) {
       do {
-        guard
-          case .recover1(let response) = try await request(
-            .recover1, realm: realm, transport: transport)
-        else {
+        guard case .recover1(let response) = try outcome.get() else {
           errors.append(.assertion)
           continue
         }
@@ -148,12 +147,12 @@ public struct JuiceboxRecovery: Sendable {
         share: SecretShare<RistrettoPoint>, commitment: [UInt8],
         verifyingKey: [UInt8], guessesRemaining: Int
       )] = []
-    for realm in realms {
+    let phase2 = try await requestEach(realms, transport: transport) { _ in
+      .recover2(version: version, blindedInput: blindedInput.compressed)
+    }
+    for (realm, outcome) in zip(realms, phase2) {
       do {
-        let response = try await request(
-          .recover2(version: version, blindedInput: blindedInput.compressed),
-          realm: realm, transport: transport)
-        guard case .recover2(let recover2) = response else {
+        guard case .recover2(let recover2) = try outcome.get() else {
           errors.append(.assertion)
           continue
         }
@@ -221,13 +220,14 @@ public struct JuiceboxRecovery: Sendable {
     // Phase 3: exchange the unlock key tag for each realm's scalar share,
     // then decrypt the user secret.
     var scalarShares: [(share: SecretShare<RistrettoScalar>, encryptedSecret: [UInt8])] = []
-    for realm in realms {
-      let tag = JuiceboxKeys.unlockKeyTag(unlockKey: unlockKey, realmId: realm.id)
+    let phase3 = try await requestEach(realms, transport: transport) { realm in
+      .recover3(
+        version: version,
+        unlockKeyTag: JuiceboxKeys.unlockKeyTag(unlockKey: unlockKey, realmId: realm.id))
+    }
+    for (realm, outcome) in zip(realms, phase3) {
       do {
-        let response = try await request(
-          .recover3(version: version, unlockKeyTag: tag), realm: realm,
-          transport: transport)
-        guard case .recover3(let recover3) = response else {
+        guard case .recover3(let recover3) = try outcome.get() else {
           errors.append(.assertion)
           continue
         }
@@ -285,6 +285,39 @@ public struct JuiceboxRecovery: Sendable {
   }
 
   // MARK: Realm requests
+
+  /// Sends one request to every realm at once and returns each outcome in the
+  /// realms' order, so a phase checks the answers in the same order however
+  /// they arrive. Like the reference client, the realms are contacted
+  /// concurrently: one at a time, an unresponsive realm added its whole
+  /// timeout to every phase. A cancellation reaches the caller as a failed
+  /// outcome, which the phase turns into `CancellationError`.
+  private func requestEach(
+    _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
+    makeRequest: (JuiceboxRealm) -> SecretsRequest
+  ) async throws -> [Result<SecretsResponse, any Error>] {
+    try Task.checkCancellation()
+    let requests = realms.map(makeRequest)
+    return await withTaskGroup(of: (Int, Result<SecretsResponse, any Error>).self) { group in
+      for (index, (realm, secretsRequest)) in zip(realms, requests).enumerated() {
+        group.addTask {
+          do {
+            return (
+              index, .success(try await request(secretsRequest, realm: realm, transport: transport))
+            )
+          } catch {
+            return (index, .failure(error))
+          }
+        }
+      }
+      var outcomes = [Result<SecretsResponse, any Error>](
+        repeating: .failure(CancellationError()), count: realms.count)
+      for await (index, outcome) in group {
+        outcomes[index] = outcome
+      }
+      return outcomes
+    }
+  }
 
   private func request(
     _ request: SecretsRequest, realm: JuiceboxRealm,

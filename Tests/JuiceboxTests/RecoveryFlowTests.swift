@@ -278,7 +278,10 @@ struct RecoveryFlowTests {
     }
   #endif
 
-  @Test func cancellationStopsBeforeTheNextPINRequest() async throws {
+  /// Cancelling during the PIN phase stops recovery before the next phase.
+  /// The PIN requests of one phase go to the realms together, so at most one
+  /// request per realm has been sent.
+  @Test func cancellationStopsBeforeTheNextPhase() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
     for mode in CancellingTransport.Mode.allCases {
@@ -291,9 +294,42 @@ struct RecoveryFlowTests {
         Issue.record("expected cancellation")
       } catch is CancellationError {
         let requests = await transport.pinRequests
-        #expect(requests == 1)
+        #expect((1...Self.realmCount).contains(requests))
       }
     }
+  }
+
+  /// Waits until every realm has a request in flight before answering any, so
+  /// recovery only finishes when the realms are contacted together.
+  private actor GatheringTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private(set) var mostInFlight = 0
+
+    init(network: FakeNetwork) {
+      self.network = network
+    }
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      if waiting.count + 1 < RecoveryFlowTests.realmCount {
+        await withCheckedContinuation { waiting.append($0) }
+      } else {
+        mostInFlight = max(mostInFlight, waiting.count + 1)
+        for continuation in waiting { continuation.resume() }
+        waiting.removeAll()
+      }
+      return try await network.send(request)
+    }
+  }
+
+  @Test(.timeLimit(.minutes(1)))
+  func realmsAreContactedTogether() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = GatheringTransport(network: network)
+    let secret = try await recovery.recover(pin: Self.pin, transport: transport)
+    #expect(secret == Self.userSecret)
+    #expect(await transport.mostInFlight == Self.realmCount)
   }
 
   @Test func recoverWithOneRealmDown() async throws {
