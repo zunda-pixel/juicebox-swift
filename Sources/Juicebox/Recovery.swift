@@ -1,39 +1,31 @@
 import Crypto
 import Foundation
+public import HTTPTypes
 import _Clibsodium
 
 let juiceboxSodiumIsReady = sodium_init() >= 0
 
-/// A request the recovery driver asks the host app to perform. The SDK owns
-/// the Juicebox protocol, not the HTTP stack.
-public struct JuiceboxHTTPRequest: Sendable {
-  public var method: String
-  public var url: String
-  public var headers: [String: String]
-  public var body: [UInt8]
-
-  public init(method: String, url: String, headers: [String: String], body: [UInt8]) {
-    self.method = method
-    self.url = url
-    self.headers = headers
-    self.body = body
-  }
-}
-
-public struct JuiceboxHTTPResponse: Sendable {
-  public var statusCode: Int
-  public var body: [UInt8]
-
-  public init(statusCode: Int, body: [UInt8]) {
-    self.statusCode = statusCode
-    self.body = body
-  }
-}
-
-/// Performs the realm requests recovery asks for. Recovery calls `send`
-/// concurrently: each phase asks all of its realms at once, so an
-/// implementation must not assume one request at a time. Within one
-/// recovery, a realm has at most one request in flight; for a hardware
+/// Performs the realm requests recovery asks for. The SDK owns the Juicebox
+/// protocol, not the HTTP stack.
+///
+/// Each request is a POST of a CBOR message (`body`) to a realm's endpoint
+/// (`request.url`). Return the realm's response and its body whatever the
+/// status: recovery reads a realm's error from the body of a non-2xx
+/// response when there is one, and from the status otherwise. With
+/// HTTPTypesFoundation, `URLSession` can send the request:
+///
+/// ```swift
+/// struct RealmTransport: JuiceboxHTTPTransport {
+///   func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
+///     let (data, response) = try await URLSession.shared.upload(for: request, from: Data(body))
+///     return (response, Array(data))
+///   }
+/// }
+/// ```
+///
+/// Recovery calls `send` concurrently: each phase asks all of its realms at
+/// once, so an implementation must not assume one request at a time. Within
+/// one recovery, a realm has at most one request in flight; for a hardware
 /// realm, the OPRF and unlock phases (Recover2 and Recover3) call `send`
 /// twice in turn (the Noise handshake, then the request).
 ///
@@ -45,7 +37,8 @@ public struct JuiceboxHTTPResponse: Sendable {
 /// the caller cancels only if `send` responds to its task's cancellation (as
 /// `URLSession`'s async methods do).
 public protocol JuiceboxHTTPTransport: Sendable {
-  func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse
+  /// Sends `request` with `body` and returns the response with its body.
+  func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8])
 }
 
 /// Why recovery failed.
@@ -463,27 +456,21 @@ public struct JuiceboxRecovery: Sendable {
         request, realm: realm, publicKey: publicKey, token: token, transport: transport)
     }
 
-    let response = try await send(
-      JuiceboxHTTPRequest(
-        method: "POST", url: realm.requestURL,
-        headers: [
-          "Authorization": "Bearer \(token)",
-          "X-Juicebox-Version": Self.juiceboxVersion,
-        ],
-        body: request.encoded()),
+    let (response, body) = try await post(
+      request.encoded(), to: realm, headerFields: [.authorization: "Bearer \(token)"],
       transport: transport)
-    if (200..<300).contains(response.statusCode) {
-      guard let decoded = try? SecretsResponse.decode(response.body) else {
+    if response.status.kind == .successful {
+      guard let decoded = try? SecretsResponse.decode(body) else {
         throw JuiceboxRecoveryError.assertion
       }
       return decoded
     }
     // A realm may describe an error in the body along with a non-2xx
     // status; prefer the body when it parses.
-    if let decoded = try? SecretsResponse.decode(response.body) {
+    if let decoded = try? SecretsResponse.decode(body) {
       return decoded
     }
-    throw statusError(response.statusCode)
+    throw statusError(response.status)
   }
 
   private func hardwareRequest(
@@ -556,31 +543,37 @@ public struct JuiceboxRecovery: Sendable {
     _ request: ClientRequest, realm: JuiceboxRealm,
     transport: any JuiceboxHTTPTransport
   ) async throws -> ClientResponse {
-    let response = try await send(
-      JuiceboxHTTPRequest(
-        method: "POST", url: realm.requestURL,
-        headers: ["X-Juicebox-Version": Self.juiceboxVersion],
-        body: request.encoded()),
-      transport: transport)
-    if (200..<300).contains(response.statusCode) {
-      guard let decoded = try? ClientResponse.decode(response.body) else {
+    // A hardware realm takes its token inside the body, not in a header.
+    let (response, body) = try await post(
+      request.encoded(), to: realm, headerFields: [:], transport: transport)
+    if response.status.kind == .successful {
+      guard let decoded = try? ClientResponse.decode(body) else {
         throw JuiceboxRecoveryError.assertion
       }
       return decoded
     }
-    if let decoded = try? ClientResponse.decode(response.body) {
+    if let decoded = try? ClientResponse.decode(body) {
       return decoded
     }
-    throw statusError(response.statusCode)
+    throw statusError(response.status)
   }
 
-  private func send(
-    _ request: JuiceboxHTTPRequest, transport: any JuiceboxHTTPTransport
-  ) async throws -> JuiceboxHTTPResponse {
+  /// POSTs `body` to the realm's endpoint with the protocol version and
+  /// `headerFields`.
+  private func post(
+    _ body: [UInt8], to realm: JuiceboxRealm, headerFields: HTTPFields,
+    transport: any JuiceboxHTTPTransport
+  ) async throws -> (HTTPResponse, [UInt8]) {
+    // `JuiceboxConfiguration.parse` rejects a realm without a request URL,
+    // so this does not fail; it is checked here because `HTTPRequest` stops
+    // the process on a URL without a scheme.
+    guard let url = realm.requestURL else { throw JuiceboxRecoveryError.assertion }
+    var request = HTTPRequest(method: .post, url: url, headerFields: headerFields)
+    request.headerFields[.juiceboxVersion] = Self.juiceboxVersion
     try Task.checkCancellation()
-    let response: JuiceboxHTTPResponse
+    let response: (HTTPResponse, [UInt8])
     do {
-      response = try await transport.send(request)
+      response = try await transport.send(request, body: body)
     } catch {
       // Recovery stops only when the caller cancelled it. A transport may
       // also report a cancellation for its own reasons (an invalidated
@@ -606,11 +599,11 @@ public struct JuiceboxRecovery: Sendable {
 
   // MARK: Helpers
 
-  private func statusError(_ status: Int) -> JuiceboxRecoveryError {
+  private func statusError(_ status: HTTPResponse.Status) -> JuiceboxRecoveryError {
     switch status {
-    case 401: return .invalidAuth
-    case 426: return .upgradeRequired
-    case 429: return .rateLimitExceeded
+    case .unauthorized: return .invalidAuth
+    case .upgradeRequired: return .upgradeRequired
+    case .tooManyRequests: return .rateLimitExceeded
     default: return .transient
     }
   }
@@ -680,4 +673,9 @@ extension SecretsRequest {
     case .recover2, .recover3: return true
     }
   }
+}
+
+extension HTTPField.Name {
+  /// The header that names the Juicebox protocol version the client speaks.
+  static let juiceboxVersion = Self("X-Juicebox-Version")!
 }

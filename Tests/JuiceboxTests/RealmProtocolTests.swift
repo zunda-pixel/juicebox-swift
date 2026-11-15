@@ -169,11 +169,38 @@ struct RealmProtocolTests {
       Self.configurationJSON.replacingOccurrences(
         of: "\"id\": \"3102030405060708090a0b0c0d0e0f10\"",
         with: "\"id\": \"31\""),
+      // Realm addresses that give no request URL.
+      Self.configurationJSON.replacingOccurrences(
+        of: "https://your.software.realm.address/", with: ""),
+      Self.configurationJSON.replacingOccurrences(
+        of: "https://your.software.realm.address/", with: "your.software.realm.address/"),
+      Self.configurationJSON.replacingOccurrences(
+        of: "https://your.software.realm.address/", with: "ftp://your.software.realm.address/"),
     ]
     for json in bad {
       #expect(throws: JuiceboxConfigurationError.self, Comment(rawValue: json)) {
         _ = try JuiceboxConfiguration.parse(Array(json.utf8))
       }
+    }
+  }
+
+  /// A realm's requests go to its address with `req` appended. An address
+  /// that is not an HTTP or HTTPS URL with a host gives none.
+  @Test func realmRequestURL() {
+    let cases: [(address: String, url: String?)] = [
+      ("https://realm.test/", "https://realm.test/req"),
+      ("https://realm.test", "https://realm.test/req"),
+      ("https://realm.test/base", "https://realm.test/base/req"),
+      ("http://localhost:8080/", "http://localhost:8080/req"),
+      ("", nil),
+      ("realm.test/", nil),
+      ("ftp://realm.test/", nil),
+      ("https:///", nil),
+    ]
+    for (address, url) in cases {
+      #expect(
+        JuiceboxRealm(id: [], address: address).requestURL?.absoluteString == url,
+        Comment(rawValue: address))
     }
   }
 
