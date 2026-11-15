@@ -465,9 +465,9 @@ struct RecoveryFlowTests {
     /// ahead), and the second and third realms' unlock requests fail with a
     /// server error.
     case unlock
-    /// In the unlock phase, the first realm reports a bad unlock key tag
-    /// with 3 guesses left and the second fails with a server error: the
-    /// best of the phase's own errors.
+    /// In the unlock phase, the first realm fails with a server error and
+    /// the second reports a bad unlock key tag with 3 guesses left: the best
+    /// of the phase's own errors, which is not the first one.
     case unlockWithTwoErrors
     /// The first realm reports no guesses left in the version phase, and the
     /// other two realms answer the unlock request with a wrong commitment,
@@ -508,8 +508,8 @@ struct RecoveryFlowTests {
         if isRealm3, isRecover2 { return JuiceboxHTTPResponse(statusCode: 429, body: []) }
         if isRealm2 || isRealm3, isRecover3 { return Self.serverError }
       case .unlockWithTwoErrors:
-        if isRealm1, isRecover3 { return try Self.badUnlockKeyTag() }
-        if isRealm2, isRecover3 { return Self.serverError }
+        if isRealm1, isRecover3 { return Self.serverError }
+        if isRealm2, isRecover3 { return try Self.badUnlockKeyTag() }
       case .unlockWithoutErrors:
         if isRealm1, isRecover1 { return try Self.noGuesses() }
         if isRealm2 || isRealm3, isRecover3 { return try mismatchedCommitment(for: request) }
@@ -559,10 +559,11 @@ struct RecoveryFlowTests {
             commitment: wrongCommitment)))
     }
 
-    /// Recovery counts an answer it cannot decode as a failed request
-    /// (`transient`), which could let a case pass for another reason, so
-    /// each hand-built answer must decode as intended, or the test records
-    /// an issue here. A thrown error alone would not: recovery catches it.
+    /// Recovery counts a 2xx answer it cannot decode as a failed request
+    /// (`assertion`), and an error the transport throws as `transient`;
+    /// either could let a case pass for another reason, so each hand-built
+    /// answer must decode as intended, or the test records an issue here
+    /// (throwing would not: recovery catches it).
     private static func answer(_ body: [UInt8], decodingAs expected: SecretsResponse) throws
       -> JuiceboxHTTPResponse
     {
