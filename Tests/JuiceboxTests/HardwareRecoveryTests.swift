@@ -1,6 +1,7 @@
 import CBOR
 import Crypto
 import Foundation
+import Synchronization
 import Testing
 
 @testable import Juicebox
@@ -112,10 +113,14 @@ struct HardwareRecoveryTests {
         requestPlaintext: requestPlaintext)
     }
 
-    mutating func finish(payload: [UInt8]) throws -> ([UInt8], ServerTransport) {
+    /// Returns the handshake response and the transport keys. The caller
+    /// makes the `ServerTransport` where it keeps it.
+    mutating func finish(payload: [UInt8]) throws -> (
+      ciphertext: [UInt8], inboundKey: [UInt8], outboundKey: [UInt8]
+    ) {
       let ciphertext = try cipher.seal(payload, aad: h)
       let (k1, k2) = hkdfPair(salt: ck, ikm: [])
-      return (ciphertext, ServerTransport(inboundKey: k1, outboundKey: k2))
+      return (ciphertext, k1, k2)
     }
   }
 
@@ -157,9 +162,9 @@ struct HardwareRecoveryTests {
     let realms: [String: RealmFixture]
     let signer: Curve25519.Signing.PrivateKey
     /// Recovery sends a phase's requests to the realms concurrently, so the
-    /// sessions are guarded by a lock.
-    private let lock = NSLock()
-    private var sessions: [UInt32: ServerTransport] = [:]
+    /// sessions are guarded by a mutex. `ServerTransport` keeps cipher state
+    /// and is not Sendable, so a session is made and used only inside the lock.
+    private let sessions = Mutex<[UInt32: ServerTransport]>([:])
 
     init(realms: [RealmFixture]) {
       self.realms = Dictionary(
@@ -198,8 +203,10 @@ struct HardwareRecoveryTests {
             for: realm, request: decodeCBOR(server.requestPlaintext))
           responsePayload = paddedEnvelope(inner)
         }
-        let (ciphertext, transport) = try server.finish(payload: responsePayload)
-        lock.withLock { sessions[UInt32(sessionId)] = transport }
+        let (ciphertext, inboundKey, outboundKey) = try server.finish(payload: responsePayload)
+        sessions.withLock {
+          $0[UInt32(sessionId)] = ServerTransport(inboundKey: inboundKey, outboundKey: outboundKey)
+        }
         return JuiceboxHTTPResponse(
           statusCode: 200,
           body: CBOR.map([
@@ -221,11 +228,13 @@ struct HardwareRecoveryTests {
       guard
         let transportCiphertext = encrypted["Transport"]?["ciphertext"]?
           .bytes,
-        let transport = lock.withLock({ sessions[UInt32(sessionId)] })
+        let responseCiphertext = try sessions.withLock({ sessions -> [UInt8]? in
+          guard let transport = sessions[UInt32(sessionId)] else { return nil }
+          let plaintext = try transport.open(transportCiphertext)
+          let inner = try response(for: realm, request: decodeCBOR(plaintext))
+          return try transport.seal(paddedEnvelope(inner))
+        })
       else { return JuiceboxHTTPResponse(statusCode: 400, body: []) }
-      let plaintext = try transport.open(transportCiphertext)
-      let inner = try response(for: realm, request: decodeCBOR(plaintext))
-      let responseCiphertext = try transport.seal(paddedEnvelope(inner))
       return JuiceboxHTTPResponse(
         statusCode: 200,
         body: CBOR.map([
