@@ -48,16 +48,31 @@ public protocol JuiceboxHTTPTransport: Sendable {
   func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse
 }
 
-/// Why recovery failed. `invalidPin` carries the guesses left when the realms
-/// report them.
+/// Why recovery failed. When a phase falls short, `recover` reports the best
+/// of that phase's errors, in the order of these cases (`rank`). The
+/// descriptions follow the reference client's `RecoverError`.
 public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
+  /// The secret could not be unlocked. Another PIN can be tried while
+  /// guesses remain (`guessesRemaining`, when the realms report it); with
+  /// none left, the secret is locked.
   case invalidPin(guessesRemaining: Int?)
+  /// The secret is not registered, or not fully registered, with the realms.
   case notRegistered
+  /// A realm rejected the authentication token.
   case invalidAuth
+  /// A realm requires a newer client.
   case upgradeRequired
+  /// The tenant made too many requests; try again later.
   case rateLimitExceeded
+  /// A software error or an inconsistency on the realms' side (such as an
+  /// answer that does not verify). Retrying with the same inputs is not
+  /// expected to help.
   case assertion
+  /// A failure in sending a request or receiving its answer. Retrying with
+  /// the same inputs may succeed.
   case transient
+  /// Not reported by `recover`: a configuration that cannot be used fails
+  /// earlier, in `JuiceboxConfiguration.parse` (`JuiceboxConfigurationError`).
   case invalidConfiguration
 
   /// The reference client's error ordering, used to pick the most specific
