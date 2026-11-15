@@ -105,8 +105,8 @@ public struct JuiceboxRecovery: Sendable {
     // Phase 1: every realm reports the registration version.
     var versions: [(version: [UInt8], realm: JuiceboxRealm)] = []
     var errors: [JuiceboxRecoveryError] = []
-    let phase1 = try await requestEach(configuration.realms, transport: transport) { _ in .recover1
-    }
+    let phase1 = try await requestEach(
+      configuration.realms, transport: transport, request: .recover1)
     for (realm, outcome) in zip(configuration.realms, phase1) {
       do {
         guard case .recover1(let response) = try outcome.get() else {
@@ -147,9 +147,9 @@ public struct JuiceboxRecovery: Sendable {
         share: SecretShare<RistrettoPoint>, commitment: [UInt8],
         verifyingKey: [UInt8], guessesRemaining: Int
       )] = []
-    let phase2 = try await requestEach(realms, transport: transport) { _ in
-      .recover2(version: version, blindedInput: blindedInput.compressed)
-    }
+    let phase2 = try await requestEach(
+      realms, transport: transport,
+      request: .recover2(version: version, blindedInput: blindedInput.compressed))
     for (realm, outcome) in zip(realms, phase2) {
       do {
         guard case .recover2(let recover2) = try outcome.get() else {
@@ -288,10 +288,19 @@ public struct JuiceboxRecovery: Sendable {
 
   /// Sends one request to every realm at once and returns each outcome in the
   /// realms' order, so a phase checks the answers in the same order however
-  /// they arrive. Like the reference client, the realms are contacted
-  /// concurrently: one at a time, an unresponsive realm added its whole
-  /// timeout to every phase. A cancellation reaches the caller as a failed
-  /// outcome, which the phase turns into `CancellationError`.
+  /// they arrive. A phase then takes as long as its slowest realm instead of
+  /// the sum of all of them, which matters when several realms are slow or
+  /// unresponsive. Every request is awaited; the reference client also
+  /// returns early once too many realms have failed, which this does not do.
+  /// A cancellation reaches the caller as a failed outcome, which the phase
+  /// turns into `CancellationError`.
+  private func requestEach(
+    _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
+    request: SecretsRequest
+  ) async throws -> [Result<SecretsResponse, any Error>] {
+    try await requestEach(realms, transport: transport) { _ in request }
+  }
+
   private func requestEach(
     _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
     makeRequest: (JuiceboxRealm) -> SecretsRequest

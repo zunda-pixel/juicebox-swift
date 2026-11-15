@@ -299,11 +299,15 @@ struct RecoveryFlowTests {
     }
   }
 
-  /// Waits until every realm has a request in flight before answering any, so
-  /// recovery only finishes when the realms are contacted together.
+  /// Holds each request for up to a second until the other realms of its
+  /// phase have been asked too, and records how many were in flight at once.
+  /// Every phase here asks all realms, so the requests arrive in batches of
+  /// `realmCount`. When the realms are contacted one at a time, every request
+  /// waits out the second alone, so the test fails instead of hanging.
   private actor GatheringTransport: JuiceboxHTTPTransport {
     let network: FakeNetwork
-    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var arrivals = 0
+    private var inFlight = 0
     private(set) var mostInFlight = 0
 
     init(network: FakeNetwork) {
@@ -311,25 +315,71 @@ struct RecoveryFlowTests {
     }
 
     func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-      if waiting.count + 1 < RecoveryFlowTests.realmCount {
-        await withCheckedContinuation { waiting.append($0) }
-      } else {
-        mostInFlight = max(mostInFlight, waiting.count + 1)
-        for continuation in waiting { continuation.resume() }
-        waiting.removeAll()
+      let batchSize = RecoveryFlowTests.realmCount
+      arrivals += 1
+      let batchEnd = (arrivals + batchSize - 1) / batchSize * batchSize
+      inFlight += 1
+      defer { inFlight -= 1 }
+      mostInFlight = max(mostInFlight, inFlight)
+      let deadline = ContinuousClock.now + .seconds(1)
+      while arrivals < batchEnd, ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(5))
       }
       return try await network.send(request)
     }
   }
 
-  @Test(.timeLimit(.minutes(1)))
-  func realmsAreContactedTogether() async throws {
+  @Test func realmsAreContactedTogether() async throws {
     let (network, configuration, tokens) = try makeNetwork()
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
     let transport = GatheringTransport(network: network)
     let secret = try await recovery.recover(pin: Self.pin, transport: transport)
     #expect(secret == Self.userSecret)
     #expect(await transport.mostInFlight == Self.realmCount)
+  }
+
+  /// Answers the registration version at once and holds every PIN request
+  /// until the request is cancelled.
+  private actor HoldingTransport: JuiceboxHTTPTransport {
+    let network: FakeNetwork
+    private(set) var pinRequests = 0
+    private(set) var unlockRequests = 0
+
+    init(network: FakeNetwork) {
+      self.network = network
+    }
+
+    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      let value = try decodeCBOR(request.body)
+      if value == .textString("Recover1") {
+        return try await network.send(request)
+      }
+      pinRequests += 1
+      if value["Recover3"] != nil { unlockRequests += 1 }
+      try await Task.sleep(for: .seconds(30))
+      return try await network.send(request)
+    }
+  }
+
+  /// Cancelling the caller's task while the PIN requests are in flight
+  /// cancels those requests and ends recovery at once, before the unlock
+  /// phase.
+  @Test func cancellingTheCallerStopsTheRequestsInFlight() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    let transport = HoldingTransport(network: network)
+    let started = ContinuousClock.now
+    let task = Task { [pin = Self.pin] in
+      try await recovery.recover(pin: pin, transport: transport)
+    }
+    while await transport.pinRequests == 0 {
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    task.cancel()
+    await #expect(throws: CancellationError.self) { try await task.value }
+    #expect(ContinuousClock.now - started < .seconds(10))
+    #expect(await transport.pinRequests <= Self.realmCount)
+    #expect(await transport.unlockRequests == 0)
   }
 
   @Test func recoverWithOneRealmDown() async throws {
