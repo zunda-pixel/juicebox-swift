@@ -1,45 +1,10 @@
 import Clibsodium
 import Crypto
 import Foundation
-public import HTTPTypes
+public import HTTPClient
+import HTTPTypes
 
 let juiceboxSodiumIsReady = sodium_init() >= 0
-
-/// Performs the realm requests recovery asks for. The SDK owns the Juicebox
-/// protocol, not the HTTP stack.
-///
-/// Each request is a POST of a CBOR message (`body`) to a realm's endpoint
-/// (`request.url`). Return the realm's response and its body whatever the
-/// status: recovery reads a realm's error from the body of a non-2xx
-/// response when there is one, and from the status otherwise. With
-/// HTTPTypesFoundation, `URLSession` can send the request:
-///
-/// ```swift
-/// struct RealmTransport: JuiceboxHTTPTransport {
-///   func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
-///     let (data, response) = try await URLSession.shared.upload(for: request, from: Data(body))
-///     return (response, Array(data))
-///   }
-/// }
-/// ```
-///
-/// Recovery calls `send` concurrently: each phase asks all of its realms at
-/// once, so an implementation must not assume one request at a time. Within
-/// one recovery, a realm has at most one request in flight; for a hardware
-/// realm, the OPRF and unlock phases (Recover2 and Recover3) call `send`
-/// twice in turn (the Noise handshake, then the request).
-///
-/// An error `send` throws, including `CancellationError` or a cancelled
-/// `URLError`, is a failure of that realm unless the caller cancelled
-/// recovery; the other realms can still answer.
-///
-/// Each phase waits for all of its requests, so recovery stops promptly when
-/// the caller cancels only if `send` responds to its task's cancellation (as
-/// `URLSession`'s async methods do).
-public protocol JuiceboxHTTPTransport: Sendable {
-  /// Sends `request` with `body` and returns the response with its body.
-  func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8])
-}
 
 /// Why recovery failed.
 ///
@@ -59,7 +24,7 @@ public protocol JuiceboxHTTPTransport: Sendable {
 /// the same inputs may then succeed, whichever case was reported. Any retry,
 /// even with the right PIN, may use up a guess on a realm the OPRF phase asks
 /// whose unlock does not then succeed (see
-/// ``JuiceboxRecovery/recover(pin:transport:)``), and after a wrong PIN, the
+/// ``JuiceboxRecovery/recover(pin:httpClient:)``), and after a wrong PIN, the
 /// usual source of `invalidPin`, a retry with the same PIN fails again (see
 /// ``JuiceboxRecoveryError/invalidPin(guessesRemaining:)``). `recover`
 /// itself does not retry a realm (zunda-pixel/juicebox-swift#7).
@@ -80,7 +45,7 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// Usually the OPRF phase found the PIN wrong, and another PIN can be
   /// tried while guesses remain; an attempt with a wrong PIN may use up a
   /// guess on the realms its OPRF phase asks (see
-  /// ``JuiceboxRecovery/recover(pin:transport:)``). Less often, the PIN may
+  /// ``JuiceboxRecovery/recover(pin:httpClient:)``). Less often, the PIN may
   /// have been right: this case also comes from a realm's bad unlock key tag
   /// after the OPRF phase has confirmed the PIN (as in the reference client,
   /// juicebox-sdk), or from a realm with no guesses left. The same PIN may
@@ -119,7 +84,7 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
   /// not a realm answer, a hardware realm's unavailable error or its
   /// missing-session or session error (zunda-pixel/juicebox-swift#8; the
   /// reference client, juicebox-sdk, reports these two as an assertion on a
-  /// new session, which `recover` always opens), any error the transport
+  /// new session, which `recover` always opens), any error the HTTP client
   /// throws, and the answer to a request whose own task was cancelled, as
   /// long as the caller has not cancelled (then `recover` throws
   /// `CancellationError`). Retrying with the same inputs may succeed.
@@ -149,7 +114,9 @@ public enum JuiceboxRecoveryError: Error, Equatable, Sendable {
 
 /// Runs the three-phase Juicebox recovery: learn the registration version,
 /// evaluate the PIN's OPRF across realms, then unlock and decrypt the user
-/// secret. Every network call is delegated to a `JuiceboxHTTPTransport`.
+/// secret. The SDK owns the Juicebox protocol, not the HTTP stack: every
+/// network call goes through the `HTTPClientProtocol` value passed to
+/// ``recover(pin:httpClient:)``.
 public struct JuiceboxRecovery: Sendable {
   var configuration: JuiceboxConfiguration
   /// Bearer tokens keyed by lowercased realm id hex.
@@ -171,10 +138,51 @@ public struct JuiceboxRecovery: Sendable {
     self.userInfo = userInfo
   }
 
-  /// Recovers the user secret with PIN hashing off the caller's actor.
+  /// Recovers the user secret, sending the realm requests with `httpClient`,
+  /// with PIN hashing off the caller's actor.
+  ///
+  /// `httpClient` can be a `URLSession`, such as `URLSession.shared`,
+  /// AsyncHTTPClient's `HTTPClient` when http-client's `AsyncHTTPClient` trait
+  /// is enabled, or any other `HTTPClientProtocol`. Each request is a POST of
+  /// a CBOR message to a realm's `req` endpoint. Recovery reads a realm's
+  /// error from the body of a non-2xx response when there is one, and from
+  /// the status otherwise, so `execute(for:from:)` must return the response
+  /// whatever its status, as `HTTPClientProtocol` requires.
+  ///
+  /// Recovery calls `execute(for:from:)` concurrently: each phase asks all of
+  /// its realms at once. Within one recovery, a realm has at most one request
+  /// in flight; for a hardware realm, the OPRF and unlock phases (Recover2 and
+  /// Recover3) send two requests in turn (the Noise handshake, then the
+  /// request).
+  ///
+  /// A client that follows redirects, as `URLSession.shared` and
+  /// AsyncHTTPClient's `HTTPClient.shared` do, can carry a realm's token to
+  /// wherever a redirect points: on a 307 or 308 redirect to another host,
+  /// `URLSession` on Apple platforms and AsyncHTTPClient send the body again
+  /// (a hardware realm's token is in the body), and `URLSession` on Linux
+  /// sends the `Authorization` header (a software realm's token) again on
+  /// every redirect it follows. Pass a client that refuses redirects to keep
+  /// the tokens on the realm's host; a refused redirect is a 3xx answer, so
+  /// that realm fails with `transient`.
   ///
   /// Throws `CancellationError` only when the caller cancelled recovery.
-  /// Otherwise a failure is a `JuiceboxRecoveryError`.
+  /// Otherwise a failure is a `JuiceboxRecoveryError`. An error `httpClient`
+  /// throws, including `CancellationError` or `URLError(.cancelled)`, is a
+  /// failure of that realm (`transient`) unless the caller cancelled
+  /// recovery; the other realms can still answer. Each phase waits for all
+  /// of its requests, so recovery stops promptly when the caller cancels only
+  /// if `execute(for:from:)` responds to its task's cancellation (as
+  /// `URLSession` and AsyncHTTPClient do). For the same reason, a phase takes
+  /// as long as its slowest realm, and what ends a request to a realm that
+  /// stops answering is `httpClient`'s timeout: with a client that has none
+  /// (an AsyncHTTPClient configuration without a read timeout, for example),
+  /// a realm that takes a request and never answers holds recovery until the
+  /// caller cancels. Those timeouts (`URLSession`'s
+  /// `timeoutIntervalForRequest`, AsyncHTTPClient's read timeout) count the
+  /// time without data, so they do not cut off a realm that keeps answering
+  /// slowly. To limit the whole recovery, cancel the caller's task after a
+  /// deadline; with `URLSession`, `timeoutIntervalForResource` also limits
+  /// each request as a whole.
   ///
   /// A realm counts a guess when the OPRF phase (Recover2) asks it, and
   /// clears the count only when the unlock phase (Recover3) succeeds there,
@@ -187,7 +195,7 @@ public struct JuiceboxRecovery: Sendable {
   /// phase.
   @concurrent
   public func recover(
-    pin: [UInt8], transport: any JuiceboxHTTPTransport
+    pin: [UInt8], httpClient: some HTTPClientProtocol
   ) async throws -> [UInt8] {
     try Task.checkCancellation()
     guard juiceboxSodiumIsReady else { throw JuiceboxRecoveryError.assertion }
@@ -206,7 +214,7 @@ public struct JuiceboxRecovery: Sendable {
     var versions: [(version: [UInt8], realm: JuiceboxRealm)] = []
     var versionErrors: [JuiceboxRecoveryError] = []
     let phase1 = try await requestEach(
-      configuration.realms, transport: transport, request: .recover1)
+      configuration.realms, httpClient: httpClient, request: .recover1)
     for (realm, outcome) in zip(configuration.realms, phase1) {
       do {
         guard case .recover1(let response) = try outcome.get() else {
@@ -249,7 +257,7 @@ public struct JuiceboxRecovery: Sendable {
         verifyingKey: [UInt8], guessesRemaining: Int
       )] = []
     let phase2 = try await requestEach(
-      realms, transport: transport,
+      realms, httpClient: httpClient,
       request: .recover2(version: version, blindedInput: blindedInput.compressed))
     for (realm, outcome) in zip(realms, phase2) {
       do {
@@ -322,7 +330,7 @@ public struct JuiceboxRecovery: Sendable {
     // then decrypt the user secret.
     var unlockErrors: [JuiceboxRecoveryError] = []
     var scalarShares: [(share: SecretShare<RistrettoScalar>, encryptedSecret: [UInt8])] = []
-    let phase3 = try await requestEach(realms, transport: transport) { realm in
+    let phase3 = try await requestEach(realms, httpClient: httpClient) { realm in
       .recover3(
         version: version,
         unlockKeyTag: JuiceboxKeys.unlockKeyTag(unlockKey: unlockKey, realmId: realm.id))
@@ -394,10 +402,10 @@ public struct JuiceboxRecovery: Sendable {
   /// Sends the same request to each of `realms` at once; see the overload
   /// below.
   private func requestEach(
-    _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
+    _ realms: [JuiceboxRealm], httpClient: some HTTPClientProtocol,
     request: SecretsRequest
   ) async throws -> [Result<SecretsResponse, any Error>] {
-    try await requestEach(realms, transport: transport) { _ in request }
+    try await requestEach(realms, httpClient: httpClient) { _ in request }
   }
 
   /// Sends one request to each of `realms` at once and returns each outcome
@@ -408,10 +416,10 @@ public struct JuiceboxRecovery: Sendable {
   /// also returns early once too many realms have failed, which this does
   /// not do. A failed request is a failed outcome. The phase checks whether
   /// the caller cancelled recovery and throws `CancellationError` only then;
-  /// any other failure, including a cancellation the transport reports, is
+  /// any other failure, including a cancellation the HTTP client reports, is
   /// a failure of that realm.
   private func requestEach(
-    _ realms: [JuiceboxRealm], transport: any JuiceboxHTTPTransport,
+    _ realms: [JuiceboxRealm], httpClient: some HTTPClientProtocol,
     makeRequest: (JuiceboxRealm) -> SecretsRequest
   ) async throws -> [Result<SecretsResponse, any Error>] {
     try Task.checkCancellation()
@@ -421,7 +429,8 @@ public struct JuiceboxRecovery: Sendable {
         group.addTask {
           do {
             return (
-              index, .success(try await request(secretsRequest, realm: realm, transport: transport))
+              index,
+              .success(try await request(secretsRequest, realm: realm, httpClient: httpClient))
             )
           } catch {
             return (index, .failure(error))
@@ -443,19 +452,19 @@ public struct JuiceboxRecovery: Sendable {
 
   private func request(
     _ request: SecretsRequest, realm: JuiceboxRealm,
-    transport: any JuiceboxHTTPTransport
+    httpClient: some HTTPClientProtocol
   ) async throws -> SecretsResponse {
     guard let token = tokens[hexString(realm.id)] else {
       throw JuiceboxRecoveryError.invalidAuth
     }
     if let publicKey = realm.publicKey {
       return try await hardwareRequest(
-        request, realm: realm, publicKey: publicKey, token: token, transport: transport)
+        request, realm: realm, publicKey: publicKey, token: token, httpClient: httpClient)
     }
 
     let (response, body) = try await post(
       request.encoded(), to: realm, headerFields: [.authorization: "Bearer \(token)"],
-      transport: transport)
+      httpClient: httpClient)
     if response.status.kind == .successful {
       guard let decoded = try? SecretsResponse.decode(body) else {
         throw JuiceboxRecoveryError.assertion
@@ -472,7 +481,7 @@ public struct JuiceboxRecovery: Sendable {
 
   private func hardwareRequest(
     _ request: SecretsRequest, realm: JuiceboxRealm, publicKey: [UInt8], token: String,
-    transport: any JuiceboxHTTPTransport
+    httpClient: some HTTPClientProtocol
   ) async throws -> SecretsResponse {
     let needsForwardSecrecy = request.needsForwardSecrecy
     let handshakePayload = needsForwardSecrecy ? [] : request.encoded()
@@ -493,7 +502,7 @@ public struct JuiceboxRecovery: Sendable {
         encrypted: .handshake(
           clientEphemeralPublic: handshakeMessage.clientEphemeralPublic,
           payloadCiphertext: handshakeMessage.payloadCiphertext)),
-      realm: realm, transport: transport)
+      realm: realm, httpClient: httpClient)
 
     guard case .okHandshake(let fields) = handshakeResponse else {
       throw clientResponseError(handshakeResponse)
@@ -523,7 +532,7 @@ public struct JuiceboxRecovery: Sendable {
       ClientRequest(
         realmId: realm.id, authToken: token, sessionId: sessionId,
         kind: .secretsRequest, encrypted: .transport(ciphertext: ciphertext)),
-      realm: realm, transport: transport)
+      realm: realm, httpClient: httpClient)
     guard case .okTransport(let responseCiphertext) = transportResponse else {
       throw clientResponseError(transportResponse)
     }
@@ -538,11 +547,11 @@ public struct JuiceboxRecovery: Sendable {
 
   private func postClientRequest(
     _ request: ClientRequest, realm: JuiceboxRealm,
-    transport: any JuiceboxHTTPTransport
+    httpClient: some HTTPClientProtocol
   ) async throws -> ClientResponse {
     // A hardware realm takes its token inside the body, not in a header.
     let (response, body) = try await post(
-      request.encoded(), to: realm, headerFields: [:], transport: transport)
+      request.encoded(), to: realm, headerFields: [:], httpClient: httpClient)
     if response.status.kind == .successful {
       guard let decoded = try? ClientResponse.decode(body) else {
         throw JuiceboxRecoveryError.assertion
@@ -559,7 +568,7 @@ public struct JuiceboxRecovery: Sendable {
   /// `headerFields`.
   private func post(
     _ body: [UInt8], to realm: JuiceboxRealm, headerFields: HTTPFields,
-    transport: any JuiceboxHTTPTransport
+    httpClient: some HTTPClientProtocol
   ) async throws -> (HTTPResponse, [UInt8]) {
     // `JuiceboxConfiguration.parse` rejects a realm without a request URL,
     // so this does not fail; it is checked here because `HTTPRequest` stops
@@ -568,11 +577,15 @@ public struct JuiceboxRecovery: Sendable {
     var request = HTTPRequest(method: .post, url: url, headerFields: headerFields)
     request.headerFields[.juiceboxVersion] = Self.juiceboxVersion
     try Task.checkCancellation()
-    let response: (HTTPResponse, [UInt8])
+    let response: HTTPResponse
+    let responseBody: Data
     do {
-      response = try await transport.send(request, body: body)
+      // An error status does not throw (`HTTPClientProtocol` returns the
+      // response whatever its status), so the callers read the realm's error
+      // from the status and the body.
+      (responseBody, response) = try await httpClient.execute(for: request, from: Data(body))
     } catch {
-      // Recovery stops only when the caller cancelled it. A transport may
+      // Recovery stops only when the caller cancelled it. The HTTP client may
       // also report a cancellation for its own reasons (an invalidated
       // session, a cancelled authentication challenge); that is a failure of
       // this realm, so the other realms can still answer, and the caller does
@@ -583,7 +596,7 @@ public struct JuiceboxRecovery: Sendable {
       throw JuiceboxRecoveryError.transient
     }
     try Task.checkCancellation()
-    return response
+    return (response, Array(responseBody))
   }
 
   private func unpackPadded(_ payload: [UInt8]) throws -> SecretsResponse {

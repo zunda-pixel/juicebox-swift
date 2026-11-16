@@ -31,6 +31,7 @@ let package = Package(
     .package(
       url: "https://github.com/apple/swift-http-types.git", from: "1.8.0",
       traits: ["FoundationURL"]),
+    .package(url: "https://github.com/zunda-pixel/http-client.git", from: "0.5.0", traits: []),
   ],
   targets: [
     .target(
@@ -41,6 +42,7 @@ let package = Package(
         .product(name: "BlakeHash", package: "blake-hash"),
         .product(name: "Clibsodium", package: "swift-sodium"),
         .product(name: "Crypto", package: "swift-crypto"),
+        .product(name: "HTTPClient", package: "http-client"),
         .product(name: "HTTPTypes", package: "swift-http-types"),
       ],
       swiftSettings: swiftSettings
@@ -51,6 +53,7 @@ let package = Package(
         .target(name: "Juicebox"),
         .product(name: "CBOR", package: "swift-cbor"),
         .product(name: "Crypto", package: "swift-crypto"),
+        .product(name: "HTTPClient", package: "http-client"),
         .product(name: "HTTPTypes", package: "swift-http-types"),
       ],
       resources: [.copy("Fixtures/noise_nk_vectors.json")],
