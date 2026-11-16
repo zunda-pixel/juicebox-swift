@@ -1,6 +1,7 @@
 import CBOR
 import Crypto
 import Foundation
+import HTTPTypes
 import Synchronization
 import Testing
 
@@ -165,6 +166,8 @@ struct HardwareRecoveryTests {
     /// sessions are guarded by a mutex. `ServerTransport` keeps cipher state
     /// and is not Sendable, so a session is made and used only inside the lock.
     private let sessions = Mutex<[UInt32: ServerTransport]>([:])
+    /// Every request, in the order the network received them.
+    let requests = Mutex<[HTTPRequest]>([])
 
     init(realms: [RealmFixture]) {
       self.realms = Dictionary(
@@ -172,23 +175,22 @@ struct HardwareRecoveryTests {
       self.signer = Curve25519.Signing.PrivateKey()
     }
 
-    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-      guard let realm = realms[request.url] else {
-        return JuiceboxHTTPResponse(statusCode: 404, body: [])
+    func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
+      requests.withLock { $0.append(request) }
+      guard let realm = realms[request.urlString] else {
+        return (HTTPResponse(status: .notFound), [])
       }
       if realm.noiseStaticSecret == nil {
-        guard request.headers["Authorization"] == "Bearer \(realm.token)" else {
-          return JuiceboxHTTPResponse(statusCode: 401, body: [])
+        guard request.headerFields[.authorization] == "Bearer \(realm.token)" else {
+          return (HTTPResponse(status: .unauthorized), [])
         }
-        return JuiceboxHTTPResponse(
-          statusCode: 200,
-          body: try response(for: realm, request: decodeCBOR(request.body)))
+        return (HTTPResponse(status: .ok), try response(for: realm, request: decodeCBOR(body)))
       }
 
-      let clientRequest = try decodeCBOR(request.body)
+      let clientRequest = try decodeCBOR(body)
       guard let sessionId = clientRequest["session_id"]?.uint64,
         let encrypted = clientRequest["encrypted"]
-      else { return JuiceboxHTTPResponse(statusCode: 400, body: []) }
+      else { return (HTTPResponse(status: .badRequest), []) }
 
       if let handshake = encrypted["Handshake"]?["handshake"],
         let ephemeral = handshake["client_ephemeral_public"]?.bytes,
@@ -207,9 +209,9 @@ struct HardwareRecoveryTests {
         sessions.withLock {
           $0[UInt32(sessionId)] = ServerTransport(inboundKey: inboundKey, outboundKey: outboundKey)
         }
-        return JuiceboxHTTPResponse(
-          statusCode: 200,
-          body: CBOR.map([
+        return (
+          HTTPResponse(status: .ok),
+          CBOR.map([
             "Ok": .map([
               "Handshake": .map([
                 "handshake": .map([
@@ -222,7 +224,8 @@ struct HardwareRecoveryTests {
                 ]),
               ])
             ])
-          ]).encode())
+          ]).encode()
+        )
       }
 
       guard
@@ -231,23 +234,24 @@ struct HardwareRecoveryTests {
         let plaintext = try sessions.withLock({ stored -> [UInt8]? in
           try stored[UInt32(sessionId)]?.open(transportCiphertext)
         })
-      else { return JuiceboxHTTPResponse(statusCode: 400, body: []) }
+      else { return (HTTPResponse(status: .badRequest), []) }
       // The realm's work runs outside the lock, so the realms answer concurrently.
       let inner = try response(for: realm, request: decodeCBOR(plaintext))
       guard
         let responseCiphertext = try sessions.withLock({ stored -> [UInt8]? in
           try stored[UInt32(sessionId)]?.seal(paddedEnvelope(inner))
         })
-      else { return JuiceboxHTTPResponse(statusCode: 400, body: []) }
-      return JuiceboxHTTPResponse(
-        statusCode: 200,
-        body: CBOR.map([
+      else { return (HTTPResponse(status: .badRequest), []) }
+      return (
+        HTTPResponse(status: .ok),
+        CBOR.map([
           "Ok": .map([
             "Transport": .map([
               "ciphertext": .byteString(responseCiphertext)
             ])
           ])
-        ]).encode())
+        ]).encode()
+      )
     }
 
     private func paddedEnvelope(_ inner: [UInt8]) -> [UInt8] {
@@ -408,6 +412,23 @@ struct HardwareRecoveryTests {
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
     let secret = try await recovery.recover(pin: Self.pin, transport: network)
     #expect(secret == Self.secret)
+
+    // Every request is a POST to its realm's `req` endpoint with the protocol
+    // version. Only the software realm's requests carry the token in a
+    // header; a hardware realm's token is in the body.
+    let requests = network.requests.withLock { $0 }
+    #expect(
+      Set(requests.map(\.urlString))
+        == ["https://realm1.test/req", "https://realm2.test/req", "https://realm3.test/req"])
+    let versionField = try #require(HTTPField.Name("X-Juicebox-Version"))
+    for request in requests {
+      #expect(request.method == .post)
+      #expect(request.headerFields[versionField] == JuiceboxRecovery.juiceboxVersion)
+      let token =
+        request.urlString == "https://realm3.test/req"
+        ? tokens[hexString(realmIds[2])].map { "Bearer \($0)" } : nil
+      #expect(request.headerFields[.authorization] == token, Comment(rawValue: request.urlString))
+    }
   }
 
   @Test func wrongPinOnHardwareRealm() async throws {

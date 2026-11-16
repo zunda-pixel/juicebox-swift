@@ -28,6 +28,9 @@ let package = Package(
     .package(url: "https://github.com/trancee/blake-hash.git", exact: "1.1.1"),
     .package(url: "https://github.com/jedisct1/swift-sodium.git", exact: "0.11.0"),
     .package(url: "https://github.com/apple/swift-crypto.git", from: "5.1.1"),
+    .package(
+      url: "https://github.com/apple/swift-http-types.git", from: "1.8.0",
+      traits: ["FoundationURL"]),
   ],
   targets: [
     .target(
@@ -38,6 +41,7 @@ let package = Package(
         .product(name: "BlakeHash", package: "blake-hash"),
         .product(name: "Clibsodium", package: "swift-sodium"),
         .product(name: "Crypto", package: "swift-crypto"),
+        .product(name: "HTTPTypes", package: "swift-http-types"),
       ],
       swiftSettings: swiftSettings
     ),
@@ -47,6 +51,7 @@ let package = Package(
         .target(name: "Juicebox"),
         .product(name: "CBOR", package: "swift-cbor"),
         .product(name: "Crypto", package: "swift-crypto"),
+        .product(name: "HTTPTypes", package: "swift-http-types"),
       ],
       resources: [.copy("Fixtures/noise_nk_vectors.json")],
       swiftSettings: swiftSettings

@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import HTTPTypes
 
 @testable import Juicebox
 
@@ -110,4 +111,9 @@ func createShares<Secret: SecretShareable>(
     value = Secret.adding(value, secret)
     return SecretShare(index: UInt32(index), secret: value)
   }
+}
+
+extension HTTPRequest {
+  /// The request's URL as text, which the fake realms are keyed by.
+  var urlString: String { url?.absoluteString ?? "" }
 }

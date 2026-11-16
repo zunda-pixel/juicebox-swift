@@ -27,12 +27,15 @@ public struct JuiceboxRealm: Sendable, Equatable {
     self.publicKey = publicKey
   }
 
-  /// The RPC endpoint: the realm's address with `req` appended.
-  var requestURL: String {
-    if address.hasSuffix("/") {
-      return address + "req"
-    }
-    return address + "/req"
+  /// The RPC endpoint: the realm's address with `req` appended, or nil when
+  /// that is not an HTTP or HTTPS URL with a host.
+  var requestURL: URL? {
+    let text = address.hasSuffix("/") ? address + "req" : address + "/req"
+    guard let url = URL(string: text),
+      let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+      let host = url.host(), !host.isEmpty
+    else { return nil }
+    return url
   }
 }
 
@@ -58,7 +61,7 @@ public struct JuiceboxConfiguration: Sendable, Equatable {
     let recoverThreshold = wire.recoverThreshold
     var realms: [JuiceboxRealm] = []
     for raw in wire.realms {
-      guard let id = hexBytes(raw.id), id.count == 16, !raw.address.isEmpty
+      guard let id = hexBytes(raw.id), id.count == 16
       else { throw JuiceboxConfigurationError.invalid }
       var publicKey: [UInt8]?
       if let key = raw.publicKey {
@@ -66,7 +69,10 @@ public struct JuiceboxConfiguration: Sendable, Equatable {
         else { throw JuiceboxConfigurationError.invalid }
         publicKey = parsed
       }
-      realms.append(JuiceboxRealm(id: id, address: raw.address, publicKey: publicKey))
+      let realm = JuiceboxRealm(id: id, address: raw.address, publicKey: publicKey)
+      // Recovery sends the realm's requests there.
+      guard realm.requestURL != nil else { throw JuiceboxConfigurationError.invalid }
+      realms.append(realm)
     }
 
     let count = realms.count

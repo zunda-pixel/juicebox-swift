@@ -1,4 +1,4 @@
-import _Clibsodium
+import Clibsodium
 
 /// A canonical little-endian scalar modulo the Ristretto255 group order.
 struct RistrettoScalar: Sendable, Equatable {

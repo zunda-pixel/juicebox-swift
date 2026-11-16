@@ -1,6 +1,7 @@
 import CBOR
 import Crypto
 import Foundation
+import HTTPTypes
 import Testing
 
 @testable import Juicebox
@@ -46,27 +47,24 @@ struct RecoveryFlowTests {
       self.realms = Dictionary(uniqueKeysWithValues: realms.map { ($0.url, $0) })
     }
 
-    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-      guard let realm = realms[request.url] else {
-        return JuiceboxHTTPResponse(statusCode: 404, body: [])
+    func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
+      guard let realm = realms[request.urlString] else {
+        return (HTTPResponse(status: .notFound), [])
       }
-      guard request.headers["Authorization"] == "Bearer \(realm.token)" else {
-        return JuiceboxHTTPResponse(statusCode: 401, body: [])
+      guard request.headerFields[.authorization] == "Bearer \(realm.token)" else {
+        return (HTTPResponse(status: .unauthorized), [])
       }
-      let value = try decodeCBOR(request.body)
+      let value = try decodeCBOR(body)
       if value == .textString("Recover1") {
-        return JuiceboxHTTPResponse(
-          statusCode: 200, body: encodeRecover1Ok(version: Self.versionForNetwork))
+        return (HTTPResponse(status: .ok), encodeRecover1Ok(version: Self.versionForNetwork))
       }
-      if let body = value["Recover2"] {
-        return JuiceboxHTTPResponse(
-          statusCode: 200, body: try recover2(realm: realm, body: body))
+      if let fields = value["Recover2"] {
+        return (HTTPResponse(status: .ok), try recover2(realm: realm, body: fields))
       }
-      if let body = value["Recover3"] {
-        return JuiceboxHTTPResponse(
-          statusCode: 200, body: try recover3(realm: realm, body: body))
+      if let fields = value["Recover3"] {
+        return (HTTPResponse(status: .ok), try recover3(realm: realm, body: fields))
       }
-      return JuiceboxHTTPResponse(statusCode: 400, body: [])
+      return (HTTPResponse(status: .badRequest), [])
     }
 
     static let versionForNetwork = RecoveryFlowTests.version
@@ -259,10 +257,10 @@ struct RecoveryFlowTests {
       self.mode = mode
     }
 
-    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-      let value = try decodeCBOR(request.body)
+    func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
+      let value = try decodeCBOR(body)
       if value == .textString("Recover1") {
-        return try await network.send(request)
+        return try await network.send(request, body: body)
       }
       if value["Recover3"] != nil { unlockRequests += 1 }
       switch mode {
@@ -272,19 +270,19 @@ struct RecoveryFlowTests {
         throw URLError(.cancelled)
       case .cancelsItsOwnTaskThenAnswers:
         unsafe withUnsafeCurrentTask { unsafe $0?.cancel() }
-        return try await network.send(request)
+        return try await network.send(request, body: body)
       case .cancelsOneRealm:
-        guard request.url.hasPrefix("https://realm1.") else {
-          return try await network.send(request)
+        guard request.urlString.hasPrefix("https://realm1.") else {
+          return try await network.send(request, body: body)
         }
         firstRealmCancellations += 1
         throw CancellationError()
       case .oneRealmCancelsItsOwnTask:
-        if request.url.hasPrefix("https://realm1.") {
+        if request.urlString.hasPrefix("https://realm1.") {
           firstRealmCancellations += 1
           unsafe withUnsafeCurrentTask { unsafe $0?.cancel() }
         }
-        return try await network.send(request)
+        return try await network.send(request, body: body)
       }
     }
   }
@@ -302,9 +300,9 @@ struct RecoveryFlowTests {
     private struct OffMainTransport: JuiceboxHTTPTransport {
       var network: FakeNetwork
 
-      func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+      func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
         checkThread()
-        return try await network.send(request)
+        return try await network.send(request, body: body)
       }
 
       private func checkThread() {
@@ -387,17 +385,17 @@ struct RecoveryFlowTests {
       caller = task
     }
 
-    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-      let value = try decodeCBOR(request.body)
+    func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
+      let value = try decodeCBOR(body)
       if value == .textString("Recover1") {
-        return try await network.send(request)
+        return try await network.send(request, body: body)
       }
       pinRequests += 1
       if value["Recover3"] != nil { unlockRequests += 1 }
       // The test sets the caller right after starting it.
       while caller == nil { await Task.yield() }
       caller?.cancel()
-      return try await network.send(request)
+      return try await network.send(request, body: body)
     }
   }
 
@@ -572,30 +570,30 @@ struct RecoveryFlowTests {
       self.scenario = scenario
     }
 
-    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-      if let answer = try await injectedAnswer(for: request) {
+    func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
+      if let answer = try await injectedAnswer(for: request, body: body) {
         injectedAnswers += 1
         return answer
       }
-      return try await network.send(request)
+      return try await network.send(request, body: body)
     }
 
-    private func injectedAnswer(for request: JuiceboxHTTPRequest) async throws
-      -> JuiceboxHTTPResponse?
+    private func injectedAnswer(for request: HTTPRequest, body: [UInt8]) async throws
+      -> (HTTPResponse, [UInt8])?
     {
-      let value = try decodeCBOR(request.body)
+      let value = try decodeCBOR(body)
       let isRecover1 = value == .textString("Recover1")
       let isRecover2 = value["Recover2"] != nil
       let isRecover3 = value["Recover3"] != nil
-      let isRealm1 = request.url.hasPrefix("https://realm1.")
-      let isRealm2 = request.url.hasPrefix("https://realm2.")
-      let isRealm3 = request.url.hasPrefix("https://realm3.")
+      let isRealm1 = request.urlString.hasPrefix("https://realm1.")
+      let isRealm2 = request.urlString.hasPrefix("https://realm2.")
+      let isRealm3 = request.urlString.hasPrefix("https://realm3.")
       switch scenario {
       case .oprfAfterAVersionError:
         if isRealm1, isRecover1 { return try Self.noGuesses() }
         if isRealm2, isRecover2 { return Self.serverError }
       case .unlockAfterAnOprfRateLimit:
-        if isRealm3, isRecover2 { return JuiceboxHTTPResponse(statusCode: 429, body: []) }
+        if isRealm3, isRecover2 { return (HTTPResponse(status: .tooManyRequests), []) }
         if isRealm2 || isRealm3, isRecover3 { return Self.serverError }
       case .unlockWithThreeErrors:
         if isRealm1 || isRealm3, isRecover3 { return Self.serverError }
@@ -617,14 +615,20 @@ struct RecoveryFlowTests {
         if isRealm2, isRecover1 { return try Self.otherVersion() }
       case .oprfWithAServerErrorAndAMismatch:
         if isRealm1, isRecover2 { return Self.serverError }
-        if isRealm2, isRecover2 { return try await mismatchedUnlockKeyCommitment(for: request) }
+        if isRealm2, isRecover2 {
+          return try await mismatchedUnlockKeyCommitment(for: request, body: body)
+        }
       case .oprfWithARateLimitAndAMismatch:
-        if isRealm1, isRecover2 { return JuiceboxHTTPResponse(statusCode: 429, body: []) }
-        if isRealm2, isRecover2 { return try await mismatchedUnlockKeyCommitment(for: request) }
+        if isRealm1, isRecover2 { return (HTTPResponse(status: .tooManyRequests), []) }
+        if isRealm2, isRecover2 {
+          return try await mismatchedUnlockKeyCommitment(for: request, body: body)
+        }
       case .unlockWithOnlyAMismatch:
         if isRealm2, isRecover3 { return try mismatchedCommitment(for: request) }
       case .oprfWithOnlyAMismatch:
-        if isRealm2, isRecover2 { return try await mismatchedUnlockKeyCommitment(for: request) }
+        if isRealm2, isRecover2 {
+          return try await mismatchedUnlockKeyCommitment(for: request, body: body)
+        }
       case .versionWithNoGuessesAndAServerError:
         if isRealm1, isRecover1 { return try Self.noGuesses() }
         if isRealm2, isRecover1 { return Self.serverError }
@@ -635,22 +639,24 @@ struct RecoveryFlowTests {
       return nil
     }
 
-    static let serverError = JuiceboxHTTPResponse(statusCode: 503, body: [])
+    static let serverError: (HTTPResponse, [UInt8]) = (
+      HTTPResponse(status: .serviceUnavailable), []
+    )
 
-    static func noGuesses() throws -> JuiceboxHTTPResponse {
+    static func noGuesses() throws -> (HTTPResponse, [UInt8]) {
       try answer(
         CBOR.map(["Recover1": .textString("NoGuesses")]).encode(),
         decodingAs: .recover1(.noGuesses))
     }
 
-    static func otherVersion() throws -> JuiceboxHTTPResponse {
+    static func otherVersion() throws -> (HTTPResponse, [UInt8]) {
       let version = [UInt8](repeating: 6, count: 16)
       return try answer(
         RecoveryFlowTests.encodeRecover1Ok(version: version),
         decodingAs: .recover1(.ok(version: version)))
     }
 
-    static func badUnlockKeyTag(guessesRemaining: UInt16 = 3) throws -> JuiceboxHTTPResponse {
+    static func badUnlockKeyTag(guessesRemaining: UInt16 = 3) throws -> (HTTPResponse, [UInt8]) {
       try answer(
         CBOR.map([
           "Recover3": .map([
@@ -662,10 +668,10 @@ struct RecoveryFlowTests {
 
     /// The realm's own unlock answer, but with a wrong encrypted-secret
     /// commitment.
-    private func mismatchedCommitment(for request: JuiceboxHTTPRequest) throws
-      -> JuiceboxHTTPResponse
+    private func mismatchedCommitment(for request: HTTPRequest) throws
+      -> (HTTPResponse, [UInt8])
     {
-      let realm = try #require(network.realms[request.url])
+      let realm = try #require(network.realms[request.urlString])
       let wrongCommitment = [UInt8](repeating: 0, count: 16)
       return try Self.answer(
         CBOR.map([
@@ -684,17 +690,17 @@ struct RecoveryFlowTests {
     }
 
     /// The realm's own OPRF answer, but with a wrong unlock key commitment.
-    private func mismatchedUnlockKeyCommitment(for request: JuiceboxHTTPRequest) async throws
-      -> JuiceboxHTTPResponse
+    private func mismatchedUnlockKeyCommitment(for request: HTTPRequest, body: [UInt8]) async throws
+      -> (HTTPResponse, [UInt8])
     {
-      let realmAnswer = try await network.send(request)
+      let (realmResponse, realmBody) = try await network.send(request, body: body)
       guard
         case .recover2(
           .ok(let signed, let blindedResult, let proof, _, let numGuesses, let guessCount)) =
-          try SecretsResponse.decode(realmAnswer.body)
+          try SecretsResponse.decode(realmBody)
       else {
         Issue.record("the realm's own OPRF answer must be Ok")
-        return realmAnswer
+        return (realmResponse, realmBody)
       }
       let wrongCommitment = [UInt8](repeating: 0, count: 32)
       return try Self.answer(
@@ -729,11 +735,11 @@ struct RecoveryFlowTests {
     /// answer must decode as intended, or the test records an issue here
     /// (throwing would not: recovery catches it).
     private static func answer(_ body: [UInt8], decodingAs expected: SecretsResponse) throws
-      -> JuiceboxHTTPResponse
+      -> (HTTPResponse, [UInt8])
     {
       let decoded = try? SecretsResponse.decode(body)
       try #require(decoded == expected)
-      return JuiceboxHTTPResponse(statusCode: 200, body: body)
+      return (HTTPResponse(status: .ok), body)
     }
   }
 
@@ -780,16 +786,16 @@ struct RecoveryFlowTests {
       self.network = network
     }
 
-    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+    func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
       let realmCount = RecoveryFlowTests.realmCount
-      let realmNumber = request.url.first(where: \.isNumber).flatMap { Int(String($0)) } ?? 0
+      let realmNumber = request.urlString.first(where: \.isNumber).flatMap { Int(String($0)) } ?? 0
       let deadline = ContinuousClock.now + .seconds(5)
       while answered.count % realmCount != realmCount - realmNumber, ContinuousClock.now < deadline
       {
         try await Task.sleep(for: .milliseconds(1))
       }
       answered.append(realmNumber)
-      return try await network.send(request)
+      return try await network.send(request, body: body)
     }
   }
 
@@ -820,7 +826,7 @@ struct RecoveryFlowTests {
       self.network = network
     }
 
-    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
+    func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
       let batchSize = RecoveryFlowTests.realmCount
       arrivals += 1
       let batchEnd = (arrivals + batchSize - 1) / batchSize * batchSize
@@ -831,7 +837,7 @@ struct RecoveryFlowTests {
       while arrivals < batchEnd, ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
       }
-      return try await network.send(request)
+      return try await network.send(request, body: body)
     }
   }
 
@@ -856,15 +862,15 @@ struct RecoveryFlowTests {
       self.network = network
     }
 
-    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-      let value = try decodeCBOR(request.body)
+    func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
+      let value = try decodeCBOR(body)
       if value == .textString("Recover1") {
-        return try await network.send(request)
+        return try await network.send(request, body: body)
       }
       pinRequests += 1
       if value["Recover3"] != nil { unlockRequests += 1 }
       try await Task.sleep(for: .seconds(30))
-      return try await network.send(request)
+      return try await network.send(request, body: body)
     }
   }
 
@@ -916,19 +922,21 @@ struct RecoveryFlowTests {
       self.otherVersionPrefix = otherVersionPrefix
     }
 
-    func send(_ request: JuiceboxHTTPRequest) async throws -> JuiceboxHTTPResponse {
-      let value = try decodeCBOR(request.body)
+    func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
+      let value = try decodeCBOR(body)
       let kind =
         value == .textString("Recover1")
         ? "Recover1"
         : ["Recover2", "Recover3"].first { value[$0] != nil } ?? "other"
-      requests.append((request.url, kind))
-      if kind == "Recover1", let otherVersionPrefix, request.url.hasPrefix(otherVersionPrefix) {
-        return JuiceboxHTTPResponse(
-          statusCode: 200,
-          body: RecoveryFlowTests.encodeRecover1Ok(version: [UInt8](repeating: 6, count: 16)))
+      requests.append((request.urlString, kind))
+      if kind == "Recover1", let otherVersionPrefix, request.urlString.hasPrefix(otherVersionPrefix)
+      {
+        return (
+          HTTPResponse(status: .ok),
+          RecoveryFlowTests.encodeRecover1Ok(version: [UInt8](repeating: 6, count: 16))
+        )
       }
-      return try await network.send(request)
+      return try await network.send(request, body: body)
     }
 
     func kinds(sentTo prefix: String) -> [String] {
@@ -999,6 +1007,18 @@ struct RecoveryFlowTests {
       Issue.record("wrong PIN must fail")
     } catch let error as JuiceboxRecoveryError {
       #expect(error == .invalidPin(guessesRemaining: 4))
+    }
+  }
+
+  /// A wrong PIN reports the fewest guesses left among the realms whose OPRF
+  /// answers agreed, not the first realm's.
+  @Test func wrongPinReportsTheFewestGuesses() async throws {
+    let (network, configuration, tokens) = try makeNetwork()
+    var realms = network.realms.values.sorted { $0.url < $1.url }
+    realms[1].guessCount = 3
+    let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
+    await #expect(throws: JuiceboxRecoveryError.invalidPin(guessesRemaining: 2)) {
+      try await recovery.recover(pin: Array("0000".utf8), transport: FakeNetwork(realms: realms))
     }
   }
 
