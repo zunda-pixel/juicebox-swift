@@ -141,13 +141,13 @@ public struct JuiceboxRecovery: Sendable {
   /// Recovers the user secret, sending the realm requests with `httpClient`,
   /// with PIN hashing off the caller's actor.
   ///
-  /// `httpClient` can be `URLSession` (`.urlSession(.shared)`), AsyncHTTPClient's
-  /// `HTTPClient` when http-client's `AsyncHTTPClient` trait is enabled, or any
-  /// other `HTTPClientProtocol`. Each request is a POST of a CBOR message to a
-  /// realm's `req` endpoint. Recovery reads a realm's error from the body of a
-  /// non-2xx response when there is one, and from the status otherwise, so
-  /// `execute(for:from:)` must return the response whatever its status, as
-  /// `HTTPClientProtocol` requires.
+  /// `httpClient` can be a `URLSession`, such as `URLSession.shared`,
+  /// AsyncHTTPClient's `HTTPClient` when http-client's `AsyncHTTPClient` trait
+  /// is enabled, or any other `HTTPClientProtocol`. Each request is a POST of
+  /// a CBOR message to a realm's `req` endpoint. Recovery reads a realm's
+  /// error from the body of a non-2xx response when there is one, and from
+  /// the status otherwise, so `execute(for:from:)` must return the response
+  /// whatever its status, as `HTTPClientProtocol` requires.
   ///
   /// Recovery calls `execute(for:from:)` concurrently: each phase asks all of
   /// its realms at once. Within one recovery, a realm has at most one request

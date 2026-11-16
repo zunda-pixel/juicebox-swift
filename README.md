@@ -6,7 +6,6 @@ Supply the realm configuration and authentication tokens to `JuiceboxRecovery`, 
 
 ```swift
 import Foundation
-import HTTPClient
 import Juicebox
 
 #if canImport(FoundationNetworking)
@@ -15,10 +14,10 @@ import Juicebox
 
 let configuration = try JuiceboxConfiguration.parse(configurationJSON)
 let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-let secret = try await recovery.recover(pin: pin, httpClient: .urlSession(.shared))
+let secret = try await recovery.recover(pin: pin, httpClient: URLSession.shared)
 ```
 
-On Linux, `URLSession` is in FoundationNetworking, so import it to name `URLSession`.
+juicebox-swift depends on http-client, so passing a `URLSession` needs no other dependency. On Linux, `URLSession` is in FoundationNetworking, so import it to name `URLSession`.
 
 Each realm request is a POST of a CBOR message, an `HTTPRequest` from [swift-http-types](https://github.com/apple/swift-http-types) with a body. Recovery reads a realm's error from the body of a non-2xx response when there is one, and from the status otherwise, so the HTTP client must return the response whatever its status, as `HTTPClientProtocol` requires.
 
@@ -75,7 +74,7 @@ final class RefuseRedirects: NSObject, URLSessionTaskDelegate {
 }
 
 let session = URLSession(configuration: .default, delegate: RefuseRedirects(), delegateQueue: nil)
-let secret = try await recovery.recover(pin: pin, httpClient: .urlSession(session))
+let secret = try await recovery.recover(pin: pin, httpClient: session)
 ```
 
 With AsyncHTTPClient, pass a client whose configuration has `redirectConfiguration: .disallow`.

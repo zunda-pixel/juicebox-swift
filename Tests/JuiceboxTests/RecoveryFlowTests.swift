@@ -1,7 +1,6 @@
 import CBOR
 import Crypto
 import Foundation
-import HTTPClient
 import HTTPTypes
 import Testing
 
@@ -321,7 +320,7 @@ struct RecoveryFlowTests {
     let unreachable = try JuiceboxConfiguration.parse(Array(json.utf8))
     let recovery = JuiceboxRecovery(configuration: unreachable, tokens: tokens)
     await #expect(throws: JuiceboxRecoveryError.transient) {
-      try await recovery.recover(pin: Self.pin, httpClient: .urlSession(.shared))
+      try await recovery.recover(pin: Self.pin, httpClient: URLSession.shared)
     }
   }
 
