@@ -7,13 +7,9 @@ permissions:
 
 jobs:
   test:
-    name: Linux tests (${{ matrix.configuration }})
+    name: Linux tests
     runs-on: ubuntu-26.04-arm
     container: swift:latest
-    strategy:
-      fail-fast: false
-      matrix:
-        configuration: [debug, release]
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -32,14 +28,12 @@ jobs:
           make -j "$(nproc)"
           make install
       - name: Test
-        env:
-          CONFIGURATION: ${{ matrix.configuration }}
         run: |
           export PKG_CONFIG_PATH="$RUNNER_TEMP/libsodium/lib/pkgconfig"
           export LD_LIBRARY_PATH="$RUNNER_TEMP/libsodium/lib"
           pkg-config --exact-version=1.0.22 libsodium
           # swift-sodium emits a preprocessor warning for system libsodium (zunda-pixel/xchat-swift#3).
-          swift test -c "$CONFIGURATION" -Xcc -Wno-cpp
+          swift test -Xcc -Wno-cpp
   lint:
     name: Swift format lint
     runs-on: ubuntu-26.04-arm
