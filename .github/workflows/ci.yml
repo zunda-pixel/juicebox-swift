@@ -13,8 +13,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Release too: an optimizer bug that Debug hides broke recovery in
-        # release builds of 0.3.0 (zunda-pixel/juicebox-swift#12).
         configuration: [debug, release]
     steps:
       - uses: actions/checkout@v7.0.1
@@ -41,8 +39,7 @@ jobs:
           export LD_LIBRARY_PATH="$RUNNER_TEMP/libsodium/lib"
           pkg-config --exact-version=1.0.22 libsodium
           # swift-sodium emits a preprocessor warning for system libsodium (zunda-pixel/xchat-swift#3).
-          # `-enable-testing` lets a release build of the tests use `@testable import`.
-          swift test -c "$CONFIGURATION" -Xswiftc -enable-testing -Xcc -Wno-cpp
+          swift test -c "$CONFIGURATION" -Xcc -Wno-cpp
   lint:
     name: Swift format lint
     runs-on: ubuntu-26.04-arm
