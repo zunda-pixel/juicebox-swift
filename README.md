@@ -2,28 +2,86 @@
 
 A Swift package for recovering PIN-protected secrets with the Juicebox protocol. The `Juicebox` module supports software realms and Noise NK hardware realms.
 
-Supply the realm configuration and authentication tokens to `JuiceboxRecovery`, implement `JuiceboxHTTPTransport`, and call `recover(pin:transport:)` to recover the secret. The transport sends each realm request, an `HTTPRequest` from [swift-http-types](https://github.com/apple/swift-http-types) with its body, and returns the `HTTPResponse` with its body, whatever the status. With `HTTPTypesFoundation`, `URLSession` can send it:
+Supply the realm configuration and authentication tokens to `JuiceboxRecovery`, and call `recover(pin:httpClient:)` with an HTTP client to recover the secret. The HTTP client is an `HTTPClientProtocol` from [http-client](https://github.com/zunda-pixel/http-client), which `URLSession` conforms to, so you can pass `URLSession.shared` as it is:
 
 ```swift
 import Foundation
-import HTTPTypes
-import HTTPTypesFoundation
+import HTTPClient
 import Juicebox
 
-struct RealmTransport: JuiceboxHTTPTransport {
-  func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8]) {
-    let (data, response) = try await URLSession.shared.upload(for: request, from: Data(body))
-    return (response, Array(data))
-  }
-}
+#if canImport(FoundationNetworking)
+  import FoundationNetworking
+#endif
 
 let configuration = try JuiceboxConfiguration.parse(configurationJSON)
 let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-let secret = try await recovery.recover(pin: pin, transport: RealmTransport())
+let secret = try await recovery.recover(pin: pin, httpClient: .urlSession(.shared))
 ```
 
-`URLSession.shared` follows redirects, which can send a request's body, and with it a hardware realm's token, to another host; a transport for an app may use a session whose delegate refuses them.
+On Linux, `URLSession` is in FoundationNetworking, so import it to name `URLSession`.
 
-Recovery calls the transport's `send` concurrently: each phase asks all of its realms at once (the OPRF and unlock phases ask the realms that reported the chosen registration version; within one recovery, one request in flight per realm; for a hardware realm, the OPRF and unlock phases send the Noise handshake and then the request), so the transport must handle several requests at a time. An error the transport throws, including a cancellation, is a failure of that realm unless the caller cancelled recovery; `recover` throws `CancellationError` only for the caller's cancellation. Each phase waits for all of its requests, so recovery stops promptly when the caller cancels only if `send` responds to its task's cancellation (as `URLSession`'s async methods do). A cancellation that arrives while the PIN is being hashed takes effect once the hashing ends.
+Each realm request is a POST of a CBOR message, an `HTTPRequest` from [swift-http-types](https://github.com/apple/swift-http-types) with a body. Recovery reads a realm's error from the body of a non-2xx response when there is one, and from the status otherwise, so the HTTP client must return the response whatever its status, as `HTTPClientProtocol` requires.
+
+## AsyncHTTPClient
+
+To send the requests with AsyncHTTPClient, enable http-client's `AsyncHTTPClient` trait. juicebox-swift leaves the trait off, so that apps that use `URLSession` don't fetch or build SwiftNIO. SwiftPM enables a trait for the whole package graph when any package enables it, so add http-client to your own dependencies with the trait:
+
+```swift
+// Package.swift (swift-tools-version: 6.4 or later)
+dependencies: [
+  .package(url: "https://github.com/zunda-pixel/juicebox-swift", from: "0.3.0"),
+  .package(
+    url: "https://github.com/zunda-pixel/http-client",
+    from: "0.5.0",
+    traits: ["AsyncHTTPClient"]
+  ),
+  .package(url: "https://github.com/swift-server/async-http-client", from: "1.33.0"),
+],
+targets: [
+  .target(
+    name: "App",
+    dependencies: [
+      .product(name: "Juicebox", package: "juicebox-swift"),
+      .product(name: "HTTPClient", package: "http-client"),
+      .product(name: "AsyncHTTPClient", package: "async-http-client"),
+    ]
+  )
+]
+```
+
+```swift
+import AsyncHTTPClient
+import HTTPClient
+import Juicebox
+
+let secret = try await recovery.recover(pin: pin, httpClient: .asyncHTTPClient(.shared))
+```
+
+## Redirects
+
+`URLSession.shared` and AsyncHTTPClient's `HTTPClient.shared` follow redirects, which can carry a realm's token to wherever the redirect points. On a 307 or 308 redirect to another host, `URLSession` on Apple platforms and AsyncHTTPClient send the request's body again, and with it a hardware realm's token, which is in the body. `URLSession` on Linux (FoundationNetworking) sends the `Authorization` header again instead, and with it a software realm's token. To keep the tokens on the realm's host, pass a client that refuses redirects. A refused redirect is a failure of that realm (`transient`), as is any other non-2xx answer without a realm answer in its body. With `URLSession`, refuse them in the session's delegate:
+
+```swift
+final class RefuseRedirects: NSObject, URLSessionTaskDelegate {
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    willPerformHTTPRedirection response: HTTPURLResponse,
+    newRequest request: URLRequest,
+    completionHandler: @escaping @Sendable (URLRequest?) -> Void
+  ) {
+    completionHandler(nil)
+  }
+}
+
+let session = URLSession(configuration: .default, delegate: RefuseRedirects(), delegateQueue: nil)
+let secret = try await recovery.recover(pin: pin, httpClient: .urlSession(session))
+```
+
+With AsyncHTTPClient, pass a client whose configuration has `redirectConfiguration: .disallow`.
+
+## Concurrency and cancellation
+
+Recovery calls the HTTP client's `execute(for:from:)` concurrently: each phase asks all of its realms at once (the OPRF and unlock phases ask the realms that reported the chosen registration version; within one recovery, one request in flight per realm; for a hardware realm, the OPRF and unlock phases send the Noise handshake and then the request). An error the HTTP client throws, including a cancellation, is a failure of that realm unless the caller cancelled recovery; `recover` throws `CancellationError` only for the caller's cancellation. Each phase waits for all of its requests, so recovery stops promptly when the caller cancels only if `execute(for:from:)` responds to its task's cancellation (as `URLSession` and AsyncHTTPClient do). A cancellation that arrives while the PIN is being hashed takes effect once the hashing ends.
 
 Run the Swift Testing suite with `swift test` on macOS.

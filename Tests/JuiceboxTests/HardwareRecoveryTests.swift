@@ -159,7 +159,7 @@ struct HardwareRecoveryTests {
     var noiseStaticSecret: Curve25519.KeyAgreement.PrivateKey?
   }
 
-  private final class FakeNetwork: JuiceboxHTTPTransport, Sendable {
+  private final class FakeNetwork: BytesHTTPClient, Sendable {
     let realms: [String: RealmFixture]
     let signer: Curve25519.Signing.PrivateKey
     /// Recovery sends a phase's requests to the realms concurrently, so the
@@ -410,7 +410,7 @@ struct HardwareRecoveryTests {
       """
     let configuration = try JuiceboxConfiguration.parse(Array(json.utf8))
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
-    let secret = try await recovery.recover(pin: Self.pin, transport: network)
+    let secret = try await recovery.recover(pin: Self.pin, httpClient: network)
     #expect(secret == Self.secret)
 
     // Every request is a POST to its realm's `req` endpoint with the protocol
@@ -483,7 +483,7 @@ struct HardwareRecoveryTests {
     let configuration = try JuiceboxConfiguration.parse(Array(json.utf8))
     let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
     do {
-      _ = try await recovery.recover(pin: Array("00000".utf8), transport: network)
+      _ = try await recovery.recover(pin: Array("00000".utf8), httpClient: network)
       Issue.record("wrong PIN must fail")
     } catch let error as JuiceboxRecoveryError {
       #expect(error == .invalidPin(guessesRemaining: 4))

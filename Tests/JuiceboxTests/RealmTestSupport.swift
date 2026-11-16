@@ -1,8 +1,27 @@
 import Crypto
 import Foundation
+import HTTPClient
 import HTTPTypes
+import Testing
 
 @testable import Juicebox
+
+/// A fake HTTP client whose realms answer in bytes, as recovery handles the
+/// bodies inside. It converts the bodies at the `HTTPClientProtocol`
+/// boundary, as recovery does on its side.
+protocol BytesHTTPClient: HTTPClientProtocol {
+  func send(_ request: HTTPRequest, body: [UInt8]) async throws -> (HTTPResponse, [UInt8])
+}
+
+extension BytesHTTPClient {
+  func execute(for request: HTTPRequest, from body: Data?) async throws -> (Data, HTTPResponse) {
+    // Recovery sends every realm request with a body. Recovery catches the
+    // error this throws, but `#require` records the issue first.
+    let body = try #require(body)
+    let (response, responseBody) = try await send(request, body: Array(body))
+    return (Data(responseBody), response)
+  }
+}
 
 extension OPRF {
   static func publicKey(for privateKey: RistrettoScalar) -> [UInt8] {
