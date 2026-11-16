@@ -30,7 +30,7 @@ To send the requests with AsyncHTTPClient, enable http-client's `AsyncHTTPClient
 ```swift
 // Package.swift (swift-tools-version: 6.4 or later)
 dependencies: [
-  .package(url: "https://github.com/zunda-pixel/juicebox-swift", from: "0.3.0"),
+  .package(url: "https://github.com/zunda-pixel/juicebox-swift", from: "0.3.1"),
   .package(
     url: "https://github.com/zunda-pixel/http-client",
     from: "0.5.0",
@@ -94,4 +94,4 @@ let secret = try await recovery.recover(pin: pin, httpClient: client)
 
 Recovery calls the HTTP client's `execute(for:from:)` concurrently: each phase asks all of its realms at once (the OPRF and unlock phases ask the realms that reported the chosen registration version; within one recovery, one request in flight per realm; for a hardware realm, the OPRF and unlock phases send the Noise handshake and then the request). An error the HTTP client throws, including a cancellation, is a failure of that realm unless the caller cancelled recovery; `recover` throws `CancellationError` only for the caller's cancellation. Each phase waits for all of its requests, so recovery stops promptly when the caller cancels only if `execute(for:from:)` responds to its task's cancellation (as `URLSession` and AsyncHTTPClient do). For the same reason, each phase takes as long as its slowest realm, and what ends a request to a realm that stops answering is the HTTP client's timeout: with a client that has none, a realm that takes a request and never answers holds recovery until the caller cancels. Those timeouts (`URLSession`'s `timeoutIntervalForRequest`, AsyncHTTPClient's read timeout) count the time without data, so they do not cut off a realm that keeps answering slowly. To limit the whole recovery, cancel the caller's task after a deadline; with `URLSession`, `timeoutIntervalForResource` also limits each request as a whole. A cancellation that arrives while the PIN is being hashed takes effect once the hashing ends.
 
-Run the Swift Testing suite with `swift test` on macOS, and in a release build with `swift test -c release -Xswiftc -enable-testing`, which catches optimizer bugs that a debug build hides. CI runs both on Linux.
+Run the Swift Testing suite with `swift test` on macOS, and in a release build with `swift test -c release -Xswiftc -enable-testing`, which can catch optimizer bugs that a debug build hides. CI runs both on Linux.

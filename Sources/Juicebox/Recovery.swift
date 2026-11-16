@@ -430,12 +430,12 @@ public struct JuiceboxRecovery: Sendable {
           // The answer is awaited into `outcome` before the child's result is
           // built, not returned as `(index, .success(try await ...))` from
           // `do` and `(index, .failure(error))` from `catch`: with
-          // optimization, Swift 6.3 and later drop the store of `index` made
-          // before the `await` when the `catch` stores it again, so a
-          // successful answer reached the group without its index and
-          // recovery trapped (zunda-pixel/juicebox-swift#12). The direct form
-          // can come back once that issue's reproduction passes with `-O` on
-          // the toolchains CI uses.
+          // optimization, Swift 6.3.3 and 6.4.2 (as of 2026-11) drop the
+          // store of `index` made before the `await` when the `catch` stores
+          // it again, so a successful answer reached the group without its
+          // index and recovery trapped (zunda-pixel/juicebox-swift#12). The
+          // direct form can come back once the conditions in that issue are
+          // met.
           let outcome: Result<SecretsResponse, any Error>
           do {
             outcome = .success(
