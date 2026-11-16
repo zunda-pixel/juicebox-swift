@@ -17,6 +17,8 @@ let recovery = JuiceboxRecovery(configuration: configuration, tokens: tokens)
 let secret = try await recovery.recover(pin: pin, httpClient: URLSession.shared)
 ```
 
+`URLSession.shared` follows redirects, which can carry a realm's token to another host; see [Redirects](#redirects).
+
 juicebox-swift depends on http-client, so passing a `URLSession` needs no other dependency. On Linux, `URLSession` is in FoundationNetworking, so import it to name `URLSession`.
 
 Each realm request is a POST of a CBOR message, an `HTTPRequest` from [swift-http-types](https://github.com/apple/swift-http-types) with a body. Recovery reads a realm's error from the body of a non-2xx response when there is one, and from the status otherwise, so the HTTP client must return the response whatever its status, as `HTTPClientProtocol` requires.
@@ -77,10 +79,19 @@ let session = URLSession(configuration: .default, delegate: RefuseRedirects(), d
 let secret = try await recovery.recover(pin: pin, httpClient: session)
 ```
 
-With AsyncHTTPClient, pass a client whose configuration has `redirectConfiguration: .disallow`.
+Make the session once and reuse it for every recovery: a session keeps a strong reference to its delegate until it is invalidated.
+
+With AsyncHTTPClient, start from the configuration of `HTTPClient.shared` and refuse redirects in it. That configuration has a read timeout, which `HTTPClient.Configuration(redirectConfiguration: .disallow)` does not: without one, a realm that takes a request and never answers holds recovery until the caller cancels (see [Concurrency and cancellation](#concurrency-and-cancellation)). Make this client once too, and shut it down when the app no longer needs it.
+
+```swift
+var configuration = AsyncHTTPClient.HTTPClient.Configuration.singletonConfiguration
+configuration.redirectConfiguration = .disallow
+let client = AsyncHTTPClient.HTTPClient(configuration: configuration)
+let secret = try await recovery.recover(pin: pin, httpClient: client)
+```
 
 ## Concurrency and cancellation
 
-Recovery calls the HTTP client's `execute(for:from:)` concurrently: each phase asks all of its realms at once (the OPRF and unlock phases ask the realms that reported the chosen registration version; within one recovery, one request in flight per realm; for a hardware realm, the OPRF and unlock phases send the Noise handshake and then the request). An error the HTTP client throws, including a cancellation, is a failure of that realm unless the caller cancelled recovery; `recover` throws `CancellationError` only for the caller's cancellation. Each phase waits for all of its requests, so recovery stops promptly when the caller cancels only if `execute(for:from:)` responds to its task's cancellation (as `URLSession` and AsyncHTTPClient do). A cancellation that arrives while the PIN is being hashed takes effect once the hashing ends.
+Recovery calls the HTTP client's `execute(for:from:)` concurrently: each phase asks all of its realms at once (the OPRF and unlock phases ask the realms that reported the chosen registration version; within one recovery, one request in flight per realm; for a hardware realm, the OPRF and unlock phases send the Noise handshake and then the request). An error the HTTP client throws, including a cancellation, is a failure of that realm unless the caller cancelled recovery; `recover` throws `CancellationError` only for the caller's cancellation. Each phase waits for all of its requests, so recovery stops promptly when the caller cancels only if `execute(for:from:)` responds to its task's cancellation (as `URLSession` and AsyncHTTPClient do). For the same reason, each phase takes as long as its slowest realm, so the HTTP client's timeouts bound how long a phase takes: with a client that has none, a realm that takes a request and never answers holds recovery until the caller cancels. A cancellation that arrives while the PIN is being hashed takes effect once the hashing ends.
 
 Run the Swift Testing suite with `swift test` on macOS.
