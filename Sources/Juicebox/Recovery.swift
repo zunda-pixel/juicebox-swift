@@ -173,10 +173,16 @@ public struct JuiceboxRecovery: Sendable {
   /// of its requests, so recovery stops promptly when the caller cancels only
   /// if `execute(for:from:)` responds to its task's cancellation (as
   /// `URLSession` and AsyncHTTPClient do). For the same reason, a phase takes
-  /// as long as its slowest realm, so `httpClient`'s timeouts bound each
-  /// phase: with a client that has none (an AsyncHTTPClient configuration
-  /// without a read timeout, for example), a realm that takes a request and
-  /// never answers holds recovery until the caller cancels.
+  /// as long as its slowest realm, and what ends a request to a realm that
+  /// stops answering is `httpClient`'s timeout: with a client that has none
+  /// (an AsyncHTTPClient configuration without a read timeout, for example),
+  /// a realm that takes a request and never answers holds recovery until the
+  /// caller cancels. Those timeouts (`URLSession`'s
+  /// `timeoutIntervalForRequest`, AsyncHTTPClient's read timeout) count the
+  /// time without data, so they do not cut off a realm that keeps answering
+  /// slowly. To limit the whole recovery, cancel the caller's task after a
+  /// deadline; with `URLSession`, `timeoutIntervalForResource` also limits
+  /// each request as a whole.
   ///
   /// A realm counts a guess when the OPRF phase (Recover2) asks it, and
   /// clears the count only when the unlock phase (Recover3) succeeds there,
