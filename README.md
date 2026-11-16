@@ -58,7 +58,7 @@ let secret = try await recovery.recover(pin: pin, httpClient: .asyncHTTPClient(.
 
 ## Redirects
 
-`URLSession.shared` and AsyncHTTPClient's `HTTPClient.shared` follow redirects, which can carry a realm's token to wherever the redirect points. On a 307 or 308 redirect to another host, `URLSession` on Apple platforms and AsyncHTTPClient send the request's body again, and with it a hardware realm's token, which is in the body. `URLSession` on Linux (FoundationNetworking) sends the `Authorization` header again instead, and with it a software realm's token. To keep the tokens on the realm's host, pass a client that refuses redirects. A refused redirect is a failure of that realm (`transient`), as is any other non-2xx answer without a realm answer in its body. With `URLSession`, refuse them in the session's delegate:
+`URLSession.shared` and AsyncHTTPClient's `HTTPClient.shared` follow redirects, which can carry a realm's token to wherever the redirect points. On a 307 or 308 redirect to another host, `URLSession` on Apple platforms and AsyncHTTPClient send the request's body again, and with it a hardware realm's token, which is in the body. `URLSession` on Linux (FoundationNetworking) does not send the body again, but sends the `Authorization` header again on every redirect it follows (301, 302, 303, 307 and 308), to another host too, and with it a software realm's token. To keep the tokens on the realm's host, pass a client that refuses redirects. A refused redirect is a failure of that realm (`transient`). With `URLSession`, refuse them in the session's delegate:
 
 ```swift
 final class RefuseRedirects: NSObject, URLSessionTaskDelegate {

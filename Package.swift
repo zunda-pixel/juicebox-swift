@@ -31,7 +31,7 @@ let package = Package(
     .package(
       url: "https://github.com/apple/swift-http-types.git", from: "1.8.0",
       traits: ["FoundationURL"]),
-    .package(url: "https://github.com/zunda-pixel/http-client.git", from: "0.5.0"),
+    .package(url: "https://github.com/zunda-pixel/http-client.git", from: "0.5.0", traits: []),
   ],
   targets: [
     .target(

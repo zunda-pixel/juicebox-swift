@@ -160,10 +160,10 @@ public struct JuiceboxRecovery: Sendable {
   /// wherever a redirect points: on a 307 or 308 redirect to another host,
   /// `URLSession` on Apple platforms and AsyncHTTPClient send the body again
   /// (a hardware realm's token is in the body), and `URLSession` on Linux
-  /// sends the `Authorization` header again (a software realm's token). Pass
-  /// a client that refuses redirects to keep the tokens on the realm's host;
-  /// a refused redirect is a non-2xx answer, so that realm fails with
-  /// `transient`.
+  /// sends the `Authorization` header (a software realm's token) again on
+  /// every redirect it follows. Pass a client that refuses redirects to keep
+  /// the tokens on the realm's host; a refused redirect is a 3xx answer, so
+  /// that realm fails with `transient`.
   ///
   /// Throws `CancellationError` only when the caller cancelled recovery.
   /// Otherwise a failure is a `JuiceboxRecoveryError`. An error `httpClient`

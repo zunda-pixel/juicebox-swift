@@ -339,7 +339,12 @@ struct RecoveryFlowTests {
     }
 
     /// The HTTP client is called off the main actor even when recovery is
-    /// started from it.
+    /// started from it. http-client builds without
+    /// NonisolatedNonsendingByDefault, so `execute(for:from:)` runs off the
+    /// caller's actor whatever recovery does, even through this client's
+    /// nonisolated(nonsending) implementation; the test still fails if
+    /// http-client changes that and recovery calls the client from the main
+    /// actor.
     @MainActor
     @Test func httpClientIsCalledOffTheMainActor() async throws {
       let (network, configuration, tokens) = try makeNetwork()
