@@ -1,6 +1,6 @@
 import CBOR
 
-private let realmCBOROptions = CBOROptions(maximumDepth: 31, rejectDuplicateMapKeys: true)
+private let realmCBOROptions = CBORDecodingOptions(maximumDepth: 31, rejectDuplicateMapKeys: true)
 
 func decodeCBOR(_ bytes: [UInt8]) throws -> CBOR {
   guard bytes.count <= 64 * 1024 else { throw RealmMessageError.malformed }
@@ -19,7 +19,7 @@ private func withoutTags(_ value: CBOR) throws -> CBOR {
     var untagged: [CBOR: CBOR] = [:]
     for (key, item) in fields {
       let key = try withoutTags(key)
-      guard untagged[key] == nil else { throw CBORError.duplicateMapKey }
+      guard untagged[key] == nil else { throw RealmMessageError.malformed }
       untagged[key] = try withoutTags(item)
     }
     return .map(untagged)

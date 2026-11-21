@@ -1,5 +1,5 @@
 {
-  "originHash" : "12e2717038305204cab2baf9ec9faf131b7465bdb2f5467b707cbaf913ba2e75",
+  "originHash" : "0d5d43fa85671cd0dc4a02ba89500c6536e3c6bf2908f4176bb74bb0e2aa6639",
   "pins" : [
     {
       "identity" : "argon2-swift",
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/brokenhandsio/swift-cbor.git",
       "state" : {
-        "revision" : "52432a1118bcbabb9a973330c3af85d8ddf3f015",
-        "version" : "0.2.0"
+        "revision" : "bf0addcfeb59d5e49c519ca6c6bbabb8f47a1b92",
+        "version" : "1.0.0-rc.1"
       }
     },
     {
