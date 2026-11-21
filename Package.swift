@@ -27,7 +27,7 @@ let package = Package(
     .library(name: "Juicebox", targets: ["Juicebox"])
   ],
   dependencies: [
-    .package(url: "https://github.com/brokenhandsio/swift-cbor.git", exact: "1.0.0-rc.1", traits: []),
+    .package(url: "https://github.com/brokenhandsio/swift-cbor.git", from: "1.0.0-rc", traits: []),
     .package(
       url: "https://github.com/zunda-pixel/argon2-swift.git",
       from: "0.1.0"
