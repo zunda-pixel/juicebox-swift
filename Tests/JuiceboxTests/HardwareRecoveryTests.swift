@@ -188,13 +188,13 @@ struct HardwareRecoveryTests {
       }
 
       let clientRequest = try decodeCBOR(body)
-      guard let sessionId = clientRequest["session_id"]?.uint64,
+      guard let sessionId = clientRequest["session_id"]?.uint64Value,
         let encrypted = clientRequest["encrypted"]
       else { return (HTTPResponse(status: .badRequest), []) }
 
       if let handshake = encrypted["Handshake"]?["handshake"],
-        let ephemeral = handshake["client_ephemeral_public"]?.bytes,
-        let payloadCiphertext = handshake["payload_ciphertext"]?.bytes
+        let ephemeral = handshake["client_ephemeral_public"]?.bytesValue,
+        let payloadCiphertext = handshake["payload_ciphertext"]?.bytesValue
       {
         var server = try ServerHandshake.begin(
           staticSecret: realm.noiseStaticSecret!, clientEphemeralPublic: ephemeral,
@@ -230,7 +230,7 @@ struct HardwareRecoveryTests {
 
       guard
         let transportCiphertext = encrypted["Transport"]?["ciphertext"]?
-          .bytes,
+          .bytesValue,
         let plaintext = try sessions.withLock({ stored -> [UInt8]? in
           try stored[UInt32(sessionId)]?.open(transportCiphertext)
         })
@@ -283,7 +283,7 @@ struct HardwareRecoveryTests {
     }
 
     private func recover2(realm: RealmFixture, body: CBOR) throws -> [UInt8] {
-      guard let blindedInputBytes = body["oprf_blinded_input"]?.bytes,
+      guard let blindedInputBytes = body["oprf_blinded_input"]?.bytesValue,
         let blindedInput = try? OPRF.BlindedInput(compressed: blindedInputBytes)
       else { return [] }
       let publicKey = OPRF.publicKey(for: realm.oprfShare)
@@ -321,7 +321,7 @@ struct HardwareRecoveryTests {
     }
 
     private func recover3(realm: RealmFixture, body: CBOR) throws -> [UInt8] {
-      guard let tag = body["unlock_key_tag"]?.bytes else { return [] }
+      guard let tag = body["unlock_key_tag"]?.bytesValue else { return [] }
       let expected = JuiceboxKeys.unlockKeyTag(unlockKey: realm.unlockKey, realmId: realm.id)
       guard constantTimeEqual(tag, expected) else {
         return CBOR.map([

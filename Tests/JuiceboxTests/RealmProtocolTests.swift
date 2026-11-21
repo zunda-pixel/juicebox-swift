@@ -94,15 +94,18 @@ struct RealmProtocolTests {
   @Test func cborTagsCountTowardNestingLimit() throws {
     #expect(try decodeCBOR([0xc0, 0x00]) == .unsignedInt(0))
     let tags = [UInt8](repeating: 0xc0, count: 64)
-    #expect(throws: CBORError.maxDepthExceeded(31)) { _ = try decodeCBOR(tags + [0x00]) }
+    #expect(throws: CBORError.maxDepthExceeded(limit: 31, offset: 32)) {
+      _ = try decodeCBOR(tags + [0x00])
+    }
   }
 
   @Test func cborRejectsDuplicateMapKeys() {
     let duplicateKeys: [UInt8] = [0xa2, 0x61, 0x78, 0x01, 0x61, 0x78, 0x02]
     let taggedDuplicate: [UInt8] = [0xa2, 0x61, 0x78, 0x01, 0xc0, 0x61, 0x78, 0x02]
-    for bytes in [duplicateKeys, taggedDuplicate] {
-      #expect(throws: CBORError.duplicateMapKey) { _ = try decodeCBOR(bytes) }
+    #expect(throws: CBORError.duplicateMapKey(offset: 4)) {
+      _ = try decodeCBOR(duplicateKeys)
     }
+    #expect(throws: RealmMessageError.malformed) { _ = try decodeCBOR(taggedDuplicate) }
   }
 
   @Test func cborRejectsOversizedResponses() {

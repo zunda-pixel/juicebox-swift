@@ -270,7 +270,7 @@ enum ClientResponse: Equatable, Sendable {
 
 private func enumVariant(_ value: CBOR) throws -> (String, CBOR) {
   guard case .map(let fields) = value, fields.count == 1,
-    let (key, body) = fields.first, let name = key.string
+    let (key, body) = fields.first, let name = key.stringValue
   else { throw RealmMessageError.malformed }
   return (name, body)
 }
@@ -283,7 +283,7 @@ private func structField(_ value: CBOR, _ name: String) throws -> CBOR {
 private func bytesField(
   _ value: CBOR, _ name: String, count: Int? = nil
 ) throws -> [UInt8] {
-  guard let bytes = try structField(value, name).bytes else {
+  guard let bytes = try structField(value, name).bytesValue else {
     throw RealmMessageError.malformed
   }
   if let count, bytes.count != count { throw RealmMessageError.malformed }
@@ -297,7 +297,7 @@ private func u16Field(_ value: CBOR, _ name: String) throws -> UInt16 {
 }
 
 private func u64Field(_ value: CBOR, _ name: String) throws -> UInt64 {
-  guard let number = try structField(value, name).uint64 else {
+  guard let number = try structField(value, name).uint64Value else {
     throw RealmMessageError.malformed
   }
   return number

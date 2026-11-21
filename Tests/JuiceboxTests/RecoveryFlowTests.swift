@@ -74,7 +74,7 @@ struct RecoveryFlowTests {
     static let versionForNetwork = RecoveryFlowTests.version
 
     private func recover2(realm: FakeRealm, body: CBOR) throws -> [UInt8] {
-      guard let blindedInputBytes = body["oprf_blinded_input"]?.bytes,
+      guard let blindedInputBytes = body["oprf_blinded_input"]?.bytesValue,
         let blindedInput = try? OPRF.BlindedInput(compressed: blindedInputBytes)
       else { return [] }
       let publicKey = OPRF.publicKey(for: realm.oprfShare)
@@ -113,7 +113,7 @@ struct RecoveryFlowTests {
     }
 
     private func recover3(realm: FakeRealm, body: CBOR) throws -> [UInt8] {
-      guard let tag = body["unlock_key_tag"]?.bytes else { return [] }
+      guard let tag = body["unlock_key_tag"]?.bytesValue else { return [] }
       let expected = JuiceboxKeys.unlockKeyTag(unlockKey: realm.unlockKey, realmId: realm.id)
       guard constantTimeEqual(tag, expected) else {
         return CBOR.map([

@@ -15,12 +15,19 @@ let swiftSettings: [SwiftSetting] = [
 
 let package = Package(
   name: "Juicebox",
-  platforms: [.macOS(.v27), .iOS(.v27)],
+  platforms: [
+    .macOS(.v15),
+    .iOS(.v18),
+    .tvOS(.v18),
+    .macCatalyst(.v18),
+    .visionOS(.v2),
+    .watchOS(.v11),
+  ],
   products: [
     .library(name: "Juicebox", targets: ["Juicebox"])
   ],
   dependencies: [
-    .package(url: "https://github.com/brokenhandsio/swift-cbor.git", exact: "0.2.0", traits: []),
+    .package(url: "https://github.com/brokenhandsio/swift-cbor.git", exact: "1.0.0-rc.1", traits: []),
     .package(
       url: "https://github.com/zunda-pixel/argon2-swift.git",
       from: "0.1.0"
