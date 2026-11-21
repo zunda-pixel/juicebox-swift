@@ -1,5 +1,5 @@
 {
-  "originHash" : "24bb27b7de75801b84fa3de7a9487e4ff901a3bb8d85dc271983b7d7678a4afc",
+  "originHash" : "12e2717038305204cab2baf9ec9faf131b7465bdb2f5467b707cbaf913ba2e75",
   "pins" : [
     {
       "identity" : "argon2-swift",
@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-crypto.git",
       "state" : {
-        "revision" : "f8fad2f95ad67b45f6340c0960e2396094d67e07",
-        "version" : "5.1.1"
+        "revision" : "3280a5f72874d2f73bf25551bbb64f524c76d834",
+        "version" : "5.1.2"
       }
     },
     {
