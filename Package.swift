@@ -33,7 +33,7 @@ let package = Package(
       from: "0.1.0"
     ),
     .package(url: "https://github.com/trancee/blake-hash.git", exact: "1.1.1"),
-    .package(url: "https://github.com/jedisct1/swift-sodium.git", exact: "0.11.0"),
+    .package(url: "https://github.com/jedisct1/swift-sodium.git", exact: "0.12.0"),
     .package(url: "https://github.com/apple/swift-crypto.git", from: "5.1.1"),
     .package(
       url: "https://github.com/apple/swift-http-types.git",
